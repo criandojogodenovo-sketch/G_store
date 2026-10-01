@@ -20,3 +20,23 @@ npm-debug.log*
 # ── Sistema operacional ──
 .DS_Store
 Thumbs.db
+
+# ── Backend Ktor ──
+backend/build/
+backend/.gradle/
+backend/out/
+
+# ── Android ──
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.keystore
+!debug.keystore
+
+# ── Segredos locais (regra duplicada por segurança) ──
+*.env
+!.env.example
+secrets/

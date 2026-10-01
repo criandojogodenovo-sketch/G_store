@@ -1,149 +1,122 @@
-# G Store API
+# G Store
 
-Backend da **G Store** (loja de jogos para Android), implementado como
-**Cloudflare Worker** conectado ao **Neon PostgreSQL**.
+Loja de jogos para Android: **app nativo (Kotlin + Compose)**, **API em
+Kotlin/Ktor**, **Neon PostgreSQL**, **Appwrite (autenticação)** e
+**GitHub Releases (hospedagem de APKs)**.
 
-## Arquitetura
+> Documentação detalhada: [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) •
+> [`docs/SECRETS.md`](docs/SECRETS.md)
 
-| Componente          | Tecnologia          | Papel                                              |
-| ------------------- | ------------------- | -------------------------------------------------- |
-| App Android         | APK (cliente)       | Descobrir e baixar jogos                           |
-| API/Backend         | Cloudflare Worker   | Este repositório (`src/index.js`)                  |
-| Banco de dados      | Neon PostgreSQL     | Catálogo de jogos e versões                        |
-| Hospedagem de APKs  | GitHub Releases     | Assets das releases (o Worker apenas redireciona)  |
+## Componentes
 
-> Cloudflare R2 **não** é utilizado nesta fase. Nenhum APK é armazenado
-> ou processado pelo Worker — ele apenas redireciona o cliente para o
-> asset hospedado no GitHub Releases.
+| Componente | Tecnologia | Pasta |
+|------------|------------|-------|
+| App Android | Kotlin, Jetpack Compose, Material 3 (dark mode), Retrofit, Appwrite SDK | `android/` |
+| API (canônica) | Kotlin, Ktor, JDBC/HikariCP, kotlinx.serialization | `backend/` |
+| Banco de dados | Neon PostgreSQL (migrações idempotentes no startup) | `backend/src/main/resources/db/migrations/` |
+| Autenticação | Appwrite (login/registro no app; API valida o JWT) | — |
+| APKs | GitHub Releases (upload em streaming pela API; download por 302) | — |
+| Worker legado | Cloudflare Worker (preservado do estágio inicial; segue funcionando) | `src/index.js` |
 
-## Endpoints
+## Endpoints da API
 
-| Método | Rota                          | Descrição                                                             |
-| ------ | ----------------------------- | --------------------------------------------------------------------- |
-| GET    | `/api/health`                 | Health check → `{"ok":true,"service":"g-store-api"}`                  |
-| GET    | `/api/games`                  | Lista os jogos com `status = 'published'`                             |
-| GET    | `/api/games/:slug`            | Detalhes de um jogo publicado (404 se não existir ou for rascunho)    |
-| GET    | `/api/games/:slug/download`   | **302** para o APK mais recente no GitHub Releases + contador         |
+| Método | Rota | Autenticação | Descrição |
+|--------|------|--------------|-----------|
+| GET | `/api/health` (`?deep=1` valida o Neon) | pública | Health check |
+| GET | `/api/games?q=&category=&sort=&limit=&offset=` | pública | Lista jogos publicados |
+| GET | `/api/games/{slug}` | pública | Detalhes de um jogo |
+| GET | `/api/games/{id}/versions` | pública | Histórico de versões |
+| GET | `/api/games/{id}/downloads` | developer dono / admin | Estatísticas de download |
+| POST | `/api/games` | developer/admin | Cria jogo (rascunho) |
+| PUT | `/api/games/{id}` | developer dono / admin | Edita jogo |
+| DELETE | `/api/games/{id}` | developer dono / admin | Remove jogo |
+| POST | `/api/games/{id}/versions` | developer dono / admin | **Publica versão (multipart: apk, icon, screenshots)** |
+| GET | `/api/games/{slug}/download` | pública | **302** para o APK mais recente + contador |
+| GET | `/api/categories` / `/api/categories/{slug}` | pública | Categorias |
+| POST | `/api/auth/sync` | usuário (JWT Appwrite) | Valida JWT e cria/atualiza perfil local |
+| GET/PUT | `/api/profile` | usuário | Perfil |
+| POST | `/api/profile/become-developer` | usuário | Auto-elevação para developer |
+| GET/PUT | `/api/admin/users…`, `/api/admin/games` | admin | Gerenciamento (base futura) |
 
-Exemplos:
-
-```bash
-curl https://<worker-domain>/api/health
-curl https://<worker-domain>/api/games
-curl -i https://<worker-domain>/api/games/space-runner/download
-```
-
-Respostas seguem o formato `{ "ok": true, ... }` / `{ "ok": false, "error": "..." }`.
-
-## Estrutura do projeto
-
-```
-G_store/
-├── src/
-│   └── index.js          # Cloudflare Worker (rotas da API)
-├── scripts/
-│   ├── db-url.js         # Carrega DATABASE_URL (env ou .dev.vars) sem expor segredos
-│   ├── migrate.js        # Cria tabelas, índices e trigger (idempotente)
-│   ├── seed.js           # Insere jogos de exemplo (idempotente)
-│   └── smoke-test.mjs    # Testa todos os endpoints contra o banco real
-├── .dev.vars.example     # Modelo das variáveis locais (sem valores reais)
-├── .gitignore            # Ignora .dev.vars, .env, node_modules, .wrangler, dist
-├── package.json
-└── wrangler.toml         # Configuração do Worker (sem segredos)
-```
-
-## Banco de dados (Neon PostgreSQL)
-
-### Tabela `games`
-
-| Coluna         | Tipo        | Observação                                        |
-| -------------- | ----------- | ------------------------------------------------- |
-| `id`           | UUID PK     | Gerado automaticamente (`gen_random_uuid()`)      |
-| `name`         | TEXT        | Nome de exibição                                  |
-| `slug`         | TEXT UNIQUE | Identificador na URL (`space-runner`)             |
-| `description`  | TEXT        | Descrição do jogo                                 |
-| `developer`    | TEXT        | Estúdio/desenvolvedor                             |
-| `version`      | TEXT        | Versão mais recente                               |
-| `category`     | TEXT        | Categoria (Arcade, Puzzle, ...)                   |
-| `icon_url`     | TEXT        | URL do ícone                                      |
-| `download_url` | TEXT        | URL direta do APK mais recente                    |
-| `downloads`    | BIGINT      | Contador de downloads (incrementado pela API)     |
-| `status`       | TEXT        | `draft` \| `published` \| `unpublished`           |
-| `created_at`   | TIMESTAMPTZ | Preenchido automaticamente                        |
-| `updated_at`   | TIMESTAMPTZ | Atualizado por trigger em qualquer UPDATE         |
-
-### Tabela `game_versions`
-
-| Coluna       | Tipo        | Observação                                    |
-| ------------ | ----------- | --------------------------------------------- |
-| `id`         | UUID PK     | Gerado automaticamente                        |
-| `game_id`    | UUID FK     | Referência a `games(id)`, `ON DELETE CASCADE` |
-| `version`    | TEXT        | Único por jogo (`UNIQUE (game_id, version)`)  |
-| `apk_url`    | TEXT        | URL do asset no GitHub Releases               |
-| `created_at` | TIMESTAMPTZ | Usada para ordenar a versão mais recente      |
-
-Índices: `idx_games_slug`, `idx_games_status`, `idx_game_versions_game_id`,
-`idx_game_versions_created_at`.
+Respostas: `{ "ok": true, ... }` / `{ "ok": false, "error": "...", "message": "..." }`.
 
 ## Como rodar localmente
 
+### API (Ktor)
+
 ```bash
-npm install
-
-# 1. Configure a credencial local (NUNCA comite o .dev.vars)
-cp .dev.vars.example .dev.vars
-#   edite .dev.vars e preencha DATABASE_URL com sua connection string do Neon
-
-# 2. Crie as tabelas e (opcional) insira jogos de exemplo
-npm run db:migrate
-npm run db:seed
-
-# 3. Rode o Worker localmente (http://localhost:8787)
-npm run dev
-
-# 4. Valide todos os endpoints
-npm test
-
-# 5. Verifique o build do Worker (dry-run, sem deploy)
-npm run build
+cd backend
+export DATABASE_URL="postgresql://usuario:senha@endpoint-pooler.neon.tech/neondb?sslmode=require"
+export GITHUB_TOKEN="pat-com-escopo-repo"        # publicação de APKs
+export APPWRITE_ENDPOINT="https://cloud.appwrite.io/v1"
+export APPWRITE_PROJECT_ID="seu-project-id"
+export ADMIN_EMAILS="voce@exemplo.com"           # papel admin no primeiro login
+gradle run
+# API em http://localhost:8080 — migrações aplicadas no startup
 ```
+
+Desenvolvimento sem Appwrite configurado: `AUTH_DISABLED=true` cria um
+usuário admin local (NUNCA usar em produção).
+
+### App Android
+
+Abra `android/` no Android Studio, ajuste `gradle.properties`:
+
+```
+GSTORE_API_BASE_URL=http://10.0.2.2:8080   # emulador aponta para localhost
+APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_PROJECT_ID=seu-project-id
+```
+
+No Appwrite Console, registre a plataforma Android do app
+(package `com.gstore.app`) para as sessões funcionarem.
+
+### Testes
+
+```bash
+cd backend
+gradle test                                  # unitários (sem segredos)
+DATABASE_URL=... GITHUB_TEST_TOKEN=... gradle test --rerun-tasks   # + integração
+```
+
+Os testes de integração rodam contra o Neon/GitHub reais e se auto-limpam;
+sem as variáveis, são pulados automaticamente.
+
+## Fluxo de publicação (developer)
+
+1. Perfil → "Quero publicar jogos" (vira `developer`).
+2. Developer Dashboard → **Publicar novo jogo**.
+3. Preenche nome/descrição/categoria/versão/notes e **seleciona o APK**.
+4. "Enviando APK..." (progresso real) → "Processando..." → "Publicado".
+5. A API criou a Release `game-{slug}-v{versão}`, subiu o APK como asset,
+   registrou `game_versions` no Neon e publicou o jogo na loja.
+
+O developer nunca abre o GitHub; o GitHub token vive só no backend.
 
 ## Segurança
 
-- A connection string do Neon é **secret** (`DATABASE_URL`) e nunca aparece
-  em código, README, logs ou respostas da API.
-- No Cloudflare: `npx wrangler secret put DATABASE_URL` (não usar `[vars]`).
-- Localmente: arquivo `.dev.vars` (ignorado pelo `.gitignore`).
-- Tokens do GitHub, API keys e senhas seguem a mesma regra: **apenas
-  variáveis/secrets de ambiente**.
-- Os endpoints públicos expõem apenas dados de catálogo (nenhum dado sensível).
+- Nenhuma credencial em código ou arquivos versionados (ver
+  [`.env.example`](.env.example) e [`docs/SECRETS.md`](docs/SECRETS.md)).
+- O app Android não recebe `GITHUB_TOKEN` nem `APPWRITE_API_KEY`.
+- A API nunca imprime segredos em logs (ver `logback.xml` e handlers).
 
-## Publicando um jogo (fluxo GitHub Releases)
+## CI/CD
 
-1. Crie uma **Release** no repositório e anexe o `.apk` como asset.
-2. Insira/atualize o jogo no banco (scripts de inserção virão na fase de
-   painel administrativo):
+- `.github/workflows/ci.yml` — build + testes do backend, verificação do
+  Worker legado e build APK do Android a cada push/PR.
+- `.github/workflows/release.yml` — ao criar tag `app-v*`, anexa o APK do
+  app à GitHub Release (estrutura pronta para releases futuras).
 
-```sql
-INSERT INTO games (name, slug, description, developer, version, category, icon_url, download_url, status)
-VALUES ('Meu Jogo', 'meu-jogo', 'Descrição', 'Dev', '1.0.0', 'Arcade',
-        'https://.../icon.png',
-        'https://github.com/<org>/<repo>/releases/download/v1.0.0/meu-jogo-1.0.0.apk',
-        'published');
+## Status
 
-INSERT INTO game_versions (game_id, version, apk_url)
-SELECT id, '1.0.0',
-       'https://github.com/<org>/<repo>/releases/download/v1.0.0/meu-jogo-1.0.0.apk'
-FROM games WHERE slug = 'meu-jogo';
-```
-
-3. A API passa a expor o jogo imediatamente (`/api/games`) e o endpoint
-   `/api/games/meu-jogo/download` redireciona para o asset da release.
-
-## Status da fase
-
-- [x] Worker com `/api/health`, `/api/games`, `/api/games/:slug`
-- [x] Estrutura de `/api/games/:slug/download` (redirect para GitHub Releases)
-- [x] Migrações do Neon (tabelas, índices, trigger)
-- [x] Seed de teste e smoke tests
-- [ ] Deploy no Cloudflare (próxima etapa — requer `wrangler secret put DATABASE_URL`)
+- [x] API Ktor com catálogo, versões, downloads, categorias, auth/roles
+- [x] Migrações do Neon (extensão do schema legado, sem quebrar nada)
+- [x] Integração Appwrite (JWT validado server-side, sem duplicar auth)
+- [x] Integração GitHub Releases (upload em streaming + redirect)
+- [x] App Android completo (14 telas, dark mode, skeleton/empty/error)
+- [x] Publicação de jogos com APK direto do app
+- [x] Testes automatizados (unitários + integração real com limpeza)
+- [x] Workflows de CI e release
+- [ ] Deploy da API em ambiente de produção (requer hospedagem escolhida)
+- [ ] Projeto Appwrite criado/registrado (configuração externa manual)
+- [ ] Painel ADMIN completo (base já preparada nas rotas)

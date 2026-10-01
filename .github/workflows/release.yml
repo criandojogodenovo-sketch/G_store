@@ -1,0 +1,47 @@
+name: Release — APK do app G Store
+
+# Workflow preparado para releases futuras do APP G Store.
+# Ao criar uma tag (ex.: app-v0.2.0), o APK de release é construído e
+# anexado à GitHub Release correspondente.
+#
+# NÃO destrutivo: apenas cria artefatos/releases com tag "app-v*".
+
+on:
+  push:
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Construir e anexar APK da release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Configurar Gradle (com cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK (debug assinado por padrão)
+        run: gradle assembleDebug --no-daemon
+
+      - name: Criar/atualizar release com o APK
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/debug/*.apk
+          generate_release_notes: true

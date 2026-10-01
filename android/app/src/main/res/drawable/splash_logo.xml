@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Fundo arredondado -->
+    <path
+        android:fillColor="#7C5CFF"
+        android:pathData="M20,4 L76,4 A16,16 0 0 1 92,20 L92,76 A16,16 0 0 1 76,92 L20,92 A16,16 0 0 1 4,76 L4,20 A16,16 0 0 1 20,4 Z" />
+    <!-- Letra G estilizada -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,34 C57,28 50,25 43,25 C29,25 19,35 19,48 C19,61 29,71 43,71 C55,71 64,63 66,52 L48,52 L48,43 L77,43 C77,60 62,80 43,80 C24,80 10,66 10,48 C10,30 24,16 43,16 C54,16 63,21 69,29 Z" />
+</vector>
