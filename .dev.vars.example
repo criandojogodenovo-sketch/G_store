@@ -1,0 +1,9 @@
+# G Store API — variáveis locais de desenvolvimento (EXEMPLO)
+#
+# Copie este arquivo para `.dev.vars` e preencha com os valores REAIS.
+# O arquivo `.dev.vars` está no .gitignore e NUNCA deve ser commitado.
+#
+# No Cloudflare, o equivalente é o secret:
+#   npx wrangler secret put DATABASE_URL
+
+DATABASE_URL="postgresql://USUARIO:SENHA@SEU-ENDPOINT.neon.tech/neondb?sslmode=require"

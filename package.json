@@ -1,0 +1,24 @@
+{
+  "name": "g-store-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "G Store API — Cloudflare Worker + Neon PostgreSQL (backend da loja de jogos Android)",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "db:migrate": "node scripts/migrate.js",
+    "db:seed": "node scripts/seed.js",
+    "test": "node scripts/smoke-test.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

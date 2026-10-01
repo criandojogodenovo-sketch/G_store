@@ -1,0 +1,20 @@
+# ───────────────────────────────────────────────────────────────
+# G Store API — configuração do Cloudflare Worker
+# ───────────────────────────────────────────────────────────────
+# SEGURANÇA: a connection string do Neon NUNCA deve ser colocada
+# neste arquivo (ele é versionado no Git).
+#
+#   - Deploy (produção):   npx wrangler secret put DATABASE_URL
+#   - Desenvolvimento:     arquivo .dev.vars na raiz (ignorado pelo Git)
+# ───────────────────────────────────────────────────────────────
+
+name = "g-store-api"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+
+[observability]
+enabled = true
+
+# Nenhuma variável pública de ambiente nesta fase.
+# Credenciais ficam exclusivamente em secrets (nunca em [vars]).
+# [vars]

@@ -1,0 +1,22 @@
+# ── Dependências ──
+node_modules/
+
+# ── Build / artefatos do Cloudflare ──
+dist/
+.wrangler/
+
+# ── SEGREDOs locais (NUNCA versionar) ──
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# ── Logs ──
+*.log
+npm-debug.log*
+
+# ── Sistema operacional ──
+.DS_Store
+Thumbs.db
