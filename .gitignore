@@ -35,6 +35,10 @@ android/.idea/
 android/captures/
 *.keystore
 !debug.keystore
+# Keystore de release (assinatura do APK) — NUNCA versionar:
+*.jks
+*.jks.b64
+keystore-release*
 
 # ── Segredos locais (regra duplicada por segurança) ──
 *.env

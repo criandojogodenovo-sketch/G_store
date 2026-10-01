@@ -43,15 +43,19 @@ class GStoreRepository private constructor(
     /* --------------------------- Appwrite --------------------------- */
 
     private fun appwriteClient(): Client {
-        val projectId = BuildConfig.APPWRITE_PROJECT_ID
-        if (projectId.isBlank()) {
+        val faltam = ConfigCheck.missingValues(
+            BuildConfig.APPWRITE_ENDPOINT,
+            BuildConfig.APPWRITE_PROJECT_ID,
+        )
+        if (faltam.isNotEmpty()) {
             throw IllegalStateException(
-                "Appwrite não configurado: defina APPWRITE_PROJECT_ID em gradle.properties ou nos secrets do CI.",
+                "Appwrite não configurado: falta ${faltam.joinToString(", ")}. " +
+                    "Defina em android/gradle.properties ou nos secrets do CI.",
             )
         }
         return Client(context)
             .setEndpoint(BuildConfig.APPWRITE_ENDPOINT)
-            .setProject(projectId)
+            .setProject(BuildConfig.APPWRITE_PROJECT_ID)
     }
 
     private val json = Json {

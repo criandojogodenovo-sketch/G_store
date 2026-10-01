@@ -1,10 +1,17 @@
 name: Release — APK do app G Store
 
-# Workflow preparado para releases futuras do APP G Store.
-# Ao criar uma tag (ex.: app-v0.2.0), o APK de release é construído e
-# anexado à GitHub Release correspondente.
+# Gera o APK de RELEASE ASSINADO quando é criada uma tag "app-v*"
+# (ex.: app-v0.2.0) e anexa o APK à GitHub Release dessa tag.
 #
-# NÃO destrutivo: apenas cria artefatos/releases com tag "app-v*".
+# Assinatura: os 4 secrets abaixo (Settings > Secrets and variables >
+# Actions). O keystore em base64 é decodificado para um ficheiro
+# TEMPORÁRIO do runner e apagado no fim (mesmo se o build falhar).
+#   KEYSTORE_BASE64   — keystore de release em base64
+#   KEYSTORE_PASSWORD — senha do keystore
+#   KEY_ALIAS         — alias da chave
+#   KEY_PASSWORD      — senha da chave
+# Nenhum secret é impresso nos logs (o GitHub mascara automaticamente,
+# e os passos abaixo nunca fazem echo dos valores).
 
 on:
   push:
@@ -17,7 +24,7 @@ permissions:
 
 jobs:
   build-apk:
-    name: Construir e anexar APK da release
+    name: Construir, assinar e publicar APK
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,11 +43,73 @@ jobs:
       - name: Configurar Gradle (com cache)
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK (debug assinado por padrão)
-        run: gradle assembleDebug --no-daemon
+      - name: Verificar se os secrets de assinatura existem
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          faltam=0
+          for nome in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!nome}" ]; then
+              echo "::error::Falta o secret $nome. Adicione em Settings > Secrets and variables > Actions > New repository secret."
+              faltam=1
+            else
+              echo "$nome: presente (valor oculto por segurança)."
+            fi
+          done
+          if [ "$faltam" -ne 0 ]; then exit 1; fi
 
-      - name: Criar/atualizar release com o APK
+      - name: Decodificar KEYSTORE_BASE64 para ficheiro temporário
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/gstore-release.jks"
+          if [ ! -s "$RUNNER_TEMP/gstore-release.jks" ]; then
+            echo "::error::KEYSTORE_BASE64 está vazio ou não é base64 válido."
+            exit 1
+          fi
+          echo "Keystore decodificado para $RUNNER_TEMP/gstore-release.jks (o conteúdo nunca é impresso)."
+
+      - name: Construir APK de release assinado (assembleRelease)
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/gstore-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verificar assinatura do APK (apksigner verify)
+        run: |
+          set -e
+          APK="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK assinado não encontrado em $APK — o build saiu sem assinatura (confirme os secrets de assinatura)."
+            ls -la app/build/outputs/apk/release/ || true
+            exit 1
+          fi
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)"
+          echo "Usando: $APKSIGNER"
+          "$APKSIGNER" verify --print-certs "$APK"
+          "$APKSIGNER" verify --verbose "$APK" | head -n 25
+          echo "APK verificado: assinatura válida."
+
+      - name: Publicar APK como artefato do workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: gstore-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
+
+      - name: Anexar APK assinado à GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/debug/*.apk
+          files: android/app/build/outputs/apk/release/app-release.apk
           generate_release_notes: true
+
+      - name: Apagar keystore temporário
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/gstore-release.jks"
+          echo "Keystore temporário apagado."

@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -20,20 +22,77 @@ android {
 
         // Configuração pública do cliente (endpoint/project id do Appwrite e
         // URL da API). Segredos NUNCA ficam aqui — a autenticação usa o SDK
-        // do Appwrite e a API key do GitHub fica só no backend.
+        // do Appwrite e a API key do Appwrite fica só no backend (secret).
+        //
+        // APPWRITE_ENDPOINT e APPWRITE_PROJECT_ID são dados PÚBLICOS do cliente
+        // (vão dentro de todo APK de qualquer forma). Podem ser substituídos
+        // com -PAPPWRITE_ENDPOINT=... -PAPPWRITE_PROJECT_ID=... no build.
         buildConfigField("String", "API_BASE_URL", "\"${project.findProperty("GSTORE_API_BASE_URL") ?: "http://10.0.2.2:8080"}\"")
-        buildConfigField("String", "APPWRITE_ENDPOINT", "\"${project.findProperty("APPWRITE_ENDPOINT") ?: "https://cloud.appwrite.io/v1"}\"")
-        buildConfigField("String", "APPWRITE_PROJECT_ID", "\"${project.findProperty("APPWRITE_PROJECT_ID") ?: ""}\"")
+        buildConfigField("String", "APPWRITE_ENDPOINT", "\"${project.findProperty("APPWRITE_ENDPOINT") ?: "https://fra.cloud.appwrite.io/v1"}\"")
+        buildConfigField("String", "APPWRITE_PROJECT_ID", "\"${project.findProperty("APPWRITE_PROJECT_ID") ?: "6abe7ca20035c289a748"}\"")
+    }
+
+    // ── Assinatura de RELEASE ──────────────────────────────────────────
+    // Lê as variáveis de ambiente (definidas no CI via GitHub Secrets, ou
+    // manualmente numa máquina local):
+    //   KEYSTORE_FILE      — caminho do keystore já decodificado (preferencial no CI)
+    //   KEYSTORE_BASE64    — keystore em base64 (o Gradle decodifica para build/,
+    //                        pasta ignorada pelo Git — conveniência local)
+    //   KEYSTORE_PASSWORD  — senha do keystore
+    //   KEY_ALIAS          — alias da chave
+    //   KEY_PASSWORD       — senha da chave
+    // NENHUM destes valores é versionado. Sem as variáveis, o APK de release
+    // sai SEM assinatura (o CI verifica com apksigner e falha o build).
+    signingConfigs {
+        create("release") {
+            val env = System.getenv()
+            val keystoreFromB64: File? = env["KEYSTORE_BASE64"]
+                ?.takeIf { it.isNotBlank() }
+                ?.let { b64 ->
+                    val decoded = Base64.getDecoder().decode(b64)
+                    val destino = File(project.layout.buildDirectory.get().asFile, "keystore-release.decoded.jks")
+                    destino.parentFile?.mkdirs()
+                    destino.writeBytes(decoded)
+                    destino
+                }
+            val keystoreFile = env["KEYSTORE_FILE"]?.takeIf { it.isNotBlank() } ?: keystoreFromB64
+            val envStorePassword = env["KEYSTORE_PASSWORD"]?.takeIf { it.isNotBlank() }
+            val envKeyAlias = env["KEY_ALIAS"]?.takeIf { it.isNotBlank() }
+            val envKeyPassword = env["KEY_PASSWORD"]?.takeIf { it.isNotBlank() }
+            if (keystoreFile != null && envStorePassword != null && envKeyAlias != null && envKeyPassword != null) {
+                storeFile = keystoreFile
+                storePassword = envStorePassword
+                keyAlias = envKeyAlias
+                keyPassword = envKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // MINIFY/R8: DESLIGADO por segurança. O app usa Retrofit +
+            // kotlinx.serialization + SDK Appwrite, e código ofuscado só
+            // revela problemas EM EXECUÇÃO (crashes ao fazer login/parsar
+            // JSON), que não dá para testar no CI. Para ligar mais tarde:
+            //   1) mudar os dois flags para true,
+            //   2) gerar o APK, instalar no telemóvel e testar login,
+            //      catálogo e download de jogos,
+            //   3) só publicar se tudo funcionar.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            val releaseSigning = signingConfigs.getByName("release")
+            if (releaseSigning.storeFile != null) {
+                signingConfig = releaseSigning
+            } else {
+                logger.warn(
+                    "AVISO: KEYSTORE_FILE/KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD " +
+                        "não definidos — o APK de release NÃO será assinado (o CI falha nesta situação).",
+                )
+            }
         }
     }
 

@@ -33,6 +33,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.gstore.app.data.remote.GameDto
 import com.gstore.app.data.repo.DownloadRepository
+import com.gstore.app.screens.ConfigErrorScreen
 import com.gstore.app.screens.auth.AuthViewModel
 import com.gstore.app.screens.auth.LoginScreen
 import com.gstore.app.screens.auth.RegisterScreen
@@ -63,7 +64,14 @@ class MainActivity : ComponentActivity() {
         val app = application as GStoreApp
         setContent {
             GStoreTheme {
-                GStoreNavHost(app)
+                // Erro CLARO no arranque se a configuração pública do
+                // Appwrite estiver em falta (endpoint/project id).
+                val missingConfig = remember { ConfigCheck.fromBuild() }
+                if (missingConfig.isNotEmpty()) {
+                    ConfigErrorScreen(missingConfig)
+                } else {
+                    GStoreNavHost(app)
+                }
             }
         }
     }
