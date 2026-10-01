@@ -81,8 +81,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+      # O runner ubuntu-latest já inclui o Android SDK com licenças aceitas;
+      # o AGP baixa automaticamente os componentes que faltarem.
 
       - name: Configurar Gradle (com cache)
         uses: gradle/actions/setup-gradle@v4
