@@ -228,7 +228,7 @@ class GStoreRepository private constructor(
                     avatarUrl = user.image,
                     role = "user",
                 ),
-            )
+            ).first()
         } catch (e: retrofit2.HttpException) {
             // Corrida de criação dupla: a linha já existe — releitura.
             if (e.code() == 409) {
@@ -420,12 +420,12 @@ class GStoreRepository private constructor(
         if (existing.isEmpty()) {
             dataApi.insertReview(
                 UpsertReviewBody(gameId = gameId, userId = uid, rating = rating.coerceIn(1, 5), comment = comment),
-            )
+            ).first()
         } else {
             dataApi.updateReview(
                 mapOf("id" to "eq.${existing.first().id}"),
                 UpsertReviewBody(gameId = gameId, userId = uid, rating = rating.coerceIn(1, 5), comment = comment),
-            )
+            ).first()
         }.toDto()
     }
 
@@ -454,7 +454,7 @@ class GStoreRepository private constructor(
                 status = status,
                 developerId = developerId,
             ),
-        )
+        ).firstOrNull() ?: throw ApiException(500, null, "Jogo criado mas não devolvido")
         row.toDto()
     }
 
@@ -477,7 +477,7 @@ class GStoreRepository private constructor(
                 iconUrl = iconUrl,
                 status = status,
             ),
-        ).toDto()
+        ).firstOrNull()?.toDto() ?: throw ApiException(500, null, "Jogo atualizado mas não devolvido")
     }
 
     suspend fun setGameCategory(gameId: String, categoryId: String): Result<Unit> = runCatching {
@@ -508,7 +508,7 @@ class GStoreRepository private constructor(
                 apkUrl = apkUrl.trim(),
                 releaseTag = "app-$version",
             ),
-        ).toVersionDto()
+        ).firstOrNull()?.toVersionDto() ?: throw ApiException(500, null, "Versão criada mas não devolvida")
     }
 
     /** Estatísticas de download do jogo (visíveis só para o admin via RLS). */

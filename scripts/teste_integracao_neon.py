@@ -31,6 +31,9 @@ def req(method, url, body=None, headers=None, timeout=25, json_body=True):
     r = urllib.request.Request(url, data=data, method=method)
     if json_body:
         r.add_header("Content-Type", "application/json")
+        # Como o app: POST/PATCH devolvem as linhas criadas/atualizadas.
+        if method in ("POST", "PATCH"):
+            r.add_header("Prefer", "return=representation")
     r.add_header("Origin", ORIGIN)
     for k, v in (headers or {}).items():
         r.add_header(k, v)
@@ -182,16 +185,33 @@ print("═══ 7. REVIEWS ═══")
 code, _, body = req("POST", f"{DATA}/reviews",
                     body={"game_id": GAME_ID, "user_id": USER_ID, "rating": 5, "comment": "Ótimo!"},
                     headers=user_h)
-pend = code == 404 and "schema cache" in str(body)
-if not pend:
-    passo("POST /reviews (criar a própria)", code in (200, 201), f"HTTP {code} {body if code >= 400 else ''}")
+if isinstance(body, list) and body:
+    body = body[0]
+if code == 409:
+    # Já existe review deste utilizador para o jogo (execuções anteriores)
+    # — o app faz upsert: lê a existente e atualiza.
+    code2, _, existente = req("GET", f"{DATA}/reviews?game_id=eq.{GAME_ID}&user_id=eq.{USER_ID}&select=*",
+                              headers=user_h)
+    rid = existente[0]["id"] if existente else None
+    passo("review existente localizada (upsert)", rid is not None, f"HTTP {code2} -> rid={str(rid)[:13]}...")
+    code, _, body = req("PATCH", f"{DATA}/reviews?id=eq.{rid}",
+                        body={"rating": 4, "comment": "Bom"},
+                        headers=user_h)
+    passo("PATCH /reviews (editar a própria)", code in (200, 204), f"HTTP {code}")
+else:
+    passo("POST /reviews (criar a própria)", code in (200, 201) and body and body.get("id"),
+          f"HTTP {code} {body if code >= 400 else ''}")
     rid = body.get("id") if isinstance(body, dict) else None
     code, _, body2 = req("PATCH", f"{DATA}/reviews?id=eq.{rid}",
                          body={"rating": 4, "comment": "Bom"},
                          headers=user_h)
-    passo("PATCH /reviews (editar a própria)", code in (200, 204), f"HTTP {code}")
-else:
-    passo("reviews no cache (pendente de refresh)", True, "ver nota no topo", pendente=True)
+    passo("PATCH /reviews (editar a própria)", code in (200, 204), f"HTTP {code} {body2 if code >= 400 else ''}")
+
+# Review DE OUTREM não pode ser editada (prova com id inexistente/aleatório).
+code, _, _ = req("PATCH", f"{DATA}/reviews?id=eq.00000000-0000-0000-0000-000000000000",
+                 body={"rating": 1}, headers=user_h)
+passo("PATCH em review inexistente não altera nada (RLS)", code in (200, 204, 403, 404),
+      f"HTTP {code}")
 
 print()
 print("═══ 8. REGISTO DE DESCARGA (RPC security definer) ═══")

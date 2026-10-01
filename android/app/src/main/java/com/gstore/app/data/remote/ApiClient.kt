@@ -206,11 +206,11 @@ interface NeonDataApi {
 
     @Headers("Prefer: return=representation")
     @POST("profiles")
-    suspend fun insertProfile(@Body body: UpsertProfileBody): ProfileRow
+    suspend fun insertProfile(@Body body: UpsertProfileBody): List<ProfileRow>
 
     @Headers("Prefer: return=representation")
     @PATCH("profiles")
-    suspend fun updateProfileRow(@QueryMap query: Map<String, String>, @Body body: UpdateProfileRowBody): ProfileRow
+    suspend fun updateProfileRow(@QueryMap query: Map<String, String>, @Body body: UpdateProfileRowBody): List<ProfileRow>
 
     /* ---------- Biblioteca ---------- */
 
@@ -220,7 +220,7 @@ interface NeonDataApi {
 
     @Headers("Prefer: return=representation, resolution=merge-duplicates")
     @POST("library")
-    suspend fun insertLibrary(@Body body: Map<String, String>): LibraryRow
+    suspend fun insertLibrary(@Body body: Map<String, String>): List<LibraryRow>
 
     @DELETE("library")
     suspend fun deleteLibrary(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
@@ -233,7 +233,7 @@ interface NeonDataApi {
 
     @Headers("Prefer: return=representation, resolution=merge-duplicates")
     @POST("favorites")
-    suspend fun insertFavorite(@Body body: Map<String, String>): FavoriteRow
+    suspend fun insertFavorite(@Body body: Map<String, String>): List<FavoriteRow>
 
     @DELETE("favorites")
     suspend fun deleteFavorite(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
@@ -246,11 +246,11 @@ interface NeonDataApi {
 
     @Headers("Prefer: return=representation")
     @POST("reviews")
-    suspend fun insertReview(@Body body: UpsertReviewBody): ReviewRow
+    suspend fun insertReview(@Body body: UpsertReviewBody): List<ReviewRow>
 
     @Headers("Prefer: return=representation")
     @PATCH("reviews")
-    suspend fun updateReview(@QueryMap query: Map<String, String>, @Body body: UpsertReviewBody): ReviewRow
+    suspend fun updateReview(@QueryMap query: Map<String, String>, @Body body: UpsertReviewBody): List<ReviewRow>
 
     @DELETE("reviews")
     suspend fun deleteReview(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
@@ -264,18 +264,18 @@ interface NeonDataApi {
 
     @Headers("Prefer: return=representation")
     @POST("games")
-    suspend fun insertGame(@Body body: CreateGameBody): GameRow
+    suspend fun insertGame(@Body body: CreateGameBody): List<GameRow>
 
     @Headers("Prefer: return=representation")
     @PATCH("games")
-    suspend fun updateGame(@QueryMap query: Map<String, String>, @Body body: UpdateGameBody): GameRow
+    suspend fun updateGame(@QueryMap query: Map<String, String>, @Body body: UpdateGameBody): List<GameRow>
 
     @Headers("Prefer: return=representation")
     @POST("game_versions")
-    suspend fun insertVersion(@Body body: CreateVersionBody): GameVersionRow
+    suspend fun insertVersion(@Body body: CreateVersionBody): List<GameVersionRow>
 
     @POST("game_categories")
-    suspend fun insertGameCategory(@Body body: GameCategoryLinkBody): GameCategoryLinkBody
+    suspend fun insertGameCategory(@Body body: GameCategoryLinkBody): List<GameCategoryLinkBody>
 
     @DELETE("game_categories")
     suspend fun deleteGameCategory(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
