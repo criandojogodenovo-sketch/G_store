@@ -15,21 +15,19 @@ android {
         applicationId = "com.gstore.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = 2
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Configuração pública do cliente (endpoint/project id do Appwrite e
-        // URL da API). Segredos NUNCA ficam aqui — a autenticação usa o SDK
-        // do Appwrite e a API key do Appwrite fica só no backend (secret).
-        //
-        // APPWRITE_ENDPOINT e APPWRITE_PROJECT_ID são dados PÚBLICOS do cliente
-        // (vão dentro de todo APK de qualquer forma). Podem ser substituídos
-        // com -PAPPWRITE_ENDPOINT=... -PAPPWRITE_PROJECT_ID=... no build.
-        buildConfigField("String", "API_BASE_URL", "\"${project.findProperty("GSTORE_API_BASE_URL") ?: "http://10.0.2.2:8080"}\"")
-        buildConfigField("String", "APPWRITE_ENDPOINT", "\"${project.findProperty("APPWRITE_ENDPOINT") ?: "https://fra.cloud.appwrite.io/v1"}\"")
-        buildConfigField("String", "APPWRITE_PROJECT_ID", "\"${project.findProperty("APPWRITE_PROJECT_ID") ?: "6abe7ca20035c289a748"}\"")
+        // Configuração pública do cliente Neon (Auth + Data API).
+        // Segredos NUNCA ficam aqui — a segurança é feita por RLS no
+        // Postgres: cada token só lê/escreve o que as políticas permitem.
+        // Estes valores vão dentro do APK de qualquer forma e podem ser
+        // substituídos com -PNEON_AUTH_URL=... no build.
+        buildConfigField("String", "NEON_AUTH_URL", "\"${project.findProperty("NEON_AUTH_URL") ?: ""}\"")
+        buildConfigField("String", "NEON_DATA_API_URL", "\"${project.findProperty("NEON_DATA_API_URL") ?: ""}\"")
+        buildConfigField("String", "NEON_AUTH_ORIGIN", "\"${project.findProperty("NEON_AUTH_ORIGIN") ?: "https://gstore.app"}\"")
     }
 
     // ── Assinatura de RELEASE ──────────────────────────────────────────
@@ -74,9 +72,9 @@ android {
     buildTypes {
         release {
             // MINIFY/R8: DESLIGADO por segurança. O app usa Retrofit +
-            // kotlinx.serialization + SDK Appwrite, e código ofuscado só
-            // revela problemas EM EXECUÇÃO (crashes ao fazer login/parsar
-            // JSON), que não dá para testar no CI. Para ligar mais tarde:
+            // kotlinx.serialization, e código ofuscado só revela problemas
+            // EM EXECUÇÃO (crashes ao fazer login/parsar JSON), que não dá
+            // para testar no CI. Para ligar mais tarde:
             //   1) mudar os dois flags para true,
             //   2) gerar o APK, instalar no telemóvel e testar login,
             //      catálogo e download de jogos,
@@ -147,9 +145,6 @@ dependencies {
 
     // Sessão local (DataStore)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-
-    // Appwrite — autenticação (registro/login/JWT no lado cliente)
-    implementation("io.appwrite:sdk-for-android:8.1.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

@@ -1,170 +1,90 @@
-# Relatório Técnico — Base completa do G Store
+# Relatório técnico — Migração para Neon (v0.3.0)
 
-**Commits finais:** `ee8afe0` (código) • `05f8c82` (relatório) • CI: 3/3 jobs SUCCESS • **Data:** 2026-10-01 • **Testes: 25/25 passando**
+Este documento resume o estado técnico do projeto após a migração completa
+para a stack **Neon Auth + Neon Data API** e a remoção total da stack
+anterior de autenticação/backend.
 
----
+## O que mudou (resumo executivo)
 
-## 1. O que foi encontrado no repositório
+| Antes (v0.2.0) | Agora (v0.3.0) |
+| --- | --- |
+| Login/registo por SDK de um fornecedor externo | Neon Auth (Managed Better Auth) por REST direto |
+| Backend próprio (Ktor) validava JWT e expunha a API | **Sem backend** — app fala direto à Neon Data API (PostgREST) |
+| API key secreta no backend | **Nenhuma secret** em lado nenhum do código |
+| Perfis ligados ao id do fornecedor externo | `profiles.id` = id do utilizador Neon Auth |
+| Publicação = upload de APK pela API | Admin regista o jogo + o link do APK no GitHub Releases |
+| RLS inexistente | RLS ativo em **todas** as tabelas + políticas por tabela |
 
-O repositório **não estava vazio**: havia 1 commit (`1097b58 feat: initialize G Store API`) com
-um backend **Cloudflare Worker (JavaScript)** conectado ao Neon, contendo:
+## Base de dados (schema `public`)
 
-- Endpoints somente-leitura: `GET /api/health`, `/api/games`, `/api/games/:slug`,
-  `/api/games/:slug/download` (redirect 302 para o GitHub Releases);
-- Scripts Node idempotentes de migração (`scripts/migrate.js`) e seed (`scripts/seed.js`)
-  — 3 jogos de exemplo já no Neon (`space-runner`, `puzzle-quest`, `neon-racer`);
-- Tabelas `games` e `game_versions` com índices e trigger de `updated_at`;
-- Boas práticas de segurança já presentes (`.dev.vars` no `.gitignore`, zero secrets no código).
+Migração aplicada: `db/migrations/V002__neon_auth_rls.sql` (idempotente).
 
-**Não existia:** app Android, autenticação/Appwrite, roles, categorias como tabela,
-criação/edição de jogos via API, upload de APK via API, CI/CD, testes automatizados.
+Novo: `profiles`, `library`, `favorites`, `reviews`, vista `v_categories`,
+funções `is_admin()` e `register_download()` (RPC). Removido: tabela
+`users` antiga (tinha uma coluna de fornecedor externo e apenas um
+utilizador de teste). Reaproveitadas sem alteração destrutiva: `games`,
+`game_versions`, `categories`, `game_categories`, `game_downloads`.
 
-## 2. Decisão arquitetural (explicada)
+### Verificação RLS (consultada ao Postgres real)
 
-O requisito definiu a stack **Kotlin + Ktor + Android nativo**. O Worker legado não suporta
-o fluxo de publicação com upload de APK, roles nem integração Appwrite. Portanto o backend
-canônico passou a ser `backend/` (Ktor), **preservando 100% do código legado no lugar**
-(`src/index.js`, `scripts/`, `wrangler.toml` continuam funcionais contra o mesmo Neon e são
-verificados no CI). Do legado foram **reutilizados**: o schema das tabelas, o padrão de resposta
-`{ok:true}` e o conceito de redirect 302 para downloads.
+- 10/10 tabelas do schema `public` com RLS ativo (incl. `schema_migrations`,
+  que fica sem políticas = bloqueada para as roles da API).
+- `games`/`game_versions`/`categories`/`game_categories`: SELECT público
+  (apenas `published`); escrita apenas `is_admin()`.
+- `profiles`/`library`/`favorites`: cada utilizador só vê/edita as suas
+  linhas (INSERT com `role='user'` forçado — impossível auto-promover a
+  admin pelo app).
+- `reviews`: leitura pública; escrita/apagamento só pelo autor.
+- `game_downloads`: INSERT pelo próprio; SELECT só admin; nada de
+  UPDATE/DELETE (analytics imutável).
 
-## 3. O que foi implementado
+### Testes de ponta a ponta executados contra o Neon real
 
-| Área | Entregas |
-|------|----------|
-| API Ktor | 17 endpoints (catálogo, versões, downloads, categorias, auth/perfil, admin, health) |
-| Neon PostgreSQL | Pool HikariCP + `PGSimpleDataSource`; migração SQL idempotente estende o schema legado; aplicada automaticamente no startup |
-| Appwrite | Validação de JWT server-side (`X-Appwrite-JWT` em `/account`), sem duplicar autenticação; perfil local com role no Neon |
-| GitHub Releases | Criação de releases `game-{slug}-v{versão}`; upload de APK/ícone/screenshots **em streaming**; metadados do asset no Neon; download por redirect 302 (ou stream com token se repo privado) |
-| App Android | 14 telas em Compose/Material 3 com dark mode, skeleton loading, empty/error states, navegação inferior |
-| Publicação | Developer publica jogo+APK pelo app: "Publicar" → "Enviando APK…" (progresso real) → "Processando…" → "Publicado" |
-| Roles | USER / DEVELOPER / ADMIN no Neon; `ADMIN_EMAILS` promove admins; auto-elevação para developer |
-| CI/CD | `ci.yml` (backend + worker legado + Android) e `release.yml` (APK na release via tag `app-v*`) |
-| Testes | 25 testes: unitários (fake Appwrite/GitHub via HttpServer) + integração real com Neon e GitHub (auto-limpeza) |
+Com token anónimo, com utilizador autenticado normal e como admin:
 
-## 4. Arquitetura final
+1. Catálogo legível **sem login** (token anónimo; rascunhos escondidos).
+2. `POST /games` anónimo → bloqueado (42501).
+3. Login por e-mail/senha → cookie de sessão → JWT (`set-auth-jwt`).
+4. Utilizador normal: `POST`/`PATCH`/`DELETE` em `games` → bloqueado
+   (0 linhas afetadas / "new row violates row-level security policy");
+   biblioteca/favoritos/reviews próprios → permitidos; os dos outros →
+   bloqueados.
+5. RPC `register_download` → insere e incrementa o contador do jogo.
+6. Erros reais preservados: `INVALID_EMAIL_OR_PASSWORD` (401),
+   `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL` (422).
+7. Sign-out → sessão invalidada no servidor.
 
-```
-Android (Compose) ──JWT Bearer──► API Ktor ──► Neon PostgreSQL (dados)
-                                     │
-                                     ├─ Appwrite (/account + X-Appwrite-JWT) — identidade
-                                     └─ GitHub Releases — APKs (streaming upload / 302 download)
-```
+## App Android
 
-- Autenticação: fonte única = Appwrite. A API valida o JWT e mapeia para perfil/role local.
-- APK nunca fica no PostgreSQL nem na memória da API (multipart → arquivo temporário → stream para o GitHub).
+- 14 telas mantidas (design e dark mode preservados), com as adições:
+  reviews (estrelas + comentário), favoritos, biblioteca com abas,
+  pull-to-refresh, banner offline, área de administração com link de APK.
+- Sessão: cookie (7 dias) + JWT (15 min, renovado automaticamente) +
+  token anónimo (1 h) guardados no DataStore privado.
+- Cache offline do catálogo (JSON nos files do app).
+- Timeouts generosos (15–30 s) + reenvio automático para redes móveis lentas.
+- Testes unitários: 9 (ConfigCheck 7 + Format 2), todos a passar.
 
-## 5. Estrutura de pastas (novo)
+## CI/CD
 
-```
-backend/src/main/kotlin/com/gstore/api/{Application,Module}.kt
-  ├─ config/AppConfig.kt          # 100% variáveis de ambiente
-  ├─ db/{Database,Migrator}.kt    # pool + migrações idempotentes (dollar-quoting safe)
-  ├─ auth/AuthSupport.kt          # validação JWT Appwrite → perfil local
-  ├─ models/Models.kt             # modelos + DTOs serializáveis
-  ├─ repositories/{Game,Category,User,Download}Repository.kt
-  ├─ services/{Appwrite,GitHub,Publish}Service.kt
-  ├─ routes/{Health,Game,Version,Download,Category,Auth,Admin}Routes.kt + RouteHelpers
-  └─ util/Slug.kt
-backend/src/main/resources/db/migrations/V001__gstore_schema.sql
-backend/src/test/kotlin/com/gstore/api/  (5 classes de teste)
-android/app/src/main/java/com/gstore/app/{data,ui,screens}/…
-.github/workflows/{ci,release}.yml
-docs/{ARQUITETURA,SECRETS}.md • .env.example
-```
+- `ci.yml`: worker legado (checagem de sintaxe) + Android (testes +
+  assembleDebug + artefato).
+- `release.yml`: na tag `app-v*` valida os 4 secrets, decodifica o keystore,
+  `assembleRelease`, `apksigner verify --print-certs`, anexa o APK à
+  GitHub Release e apaga o keystore temporário.
+- Secrets ativos no repositório: apenas os 4 de assinatura.
 
-## 6. Endpoints (resumo)
+## Limitações do Neon (beta) a conhecer
 
-Públicos: `GET /api/health?deep=1`, `GET /api/games` (q/category/sort/limit/offset),
-`GET /api/games/{slug}`, `GET /api/games/{id}/versions`, `GET /api/games/{slug}/download` (302),
-`GET /api/categories`, `GET /api/categories/{slug}`.
-Developer/Admin: `POST /api/games`, `PUT|DELETE /api/games/{id}`,
-`POST /api/games/{id}/versions` (multipart: apk, icon, screenshots, version, version_code, release_notes),
-`GET /api/games/{id}/downloads` (estatísticas).
-Auth: `POST /api/auth/sync`, `GET|PUT /api/profile`, `POST /api/profile/become-developer`.
-Admin: `GET /api/admin/games`, `GET /api/admin/users`, `PUT /api/admin/users/{id}/role`.
-
-## 7. Tabelas do Neon
-
-- **Legadas (preservadas):** `games`, `game_versions`
-- **Novas:** `users` (perfil + role), `categories`, `game_categories` (N:N), `game_downloads` (analytics), `schema_migrations`
-- **Colunas novas:** `games` (+developer_id, short_description, screenshots[], version_code);
-  `game_versions` (+version_code, release_notes, apk_file_name, apk_size_bytes, apk_asset_id, release_id, release_tag, created_by)
-- Índices e backfill de `game_categories` a partir da coluna legada `games.category`.
-
-## 8. Integração Appwrite
-
-- App: registro/login via SDK oficial (`Account.create/createEmailPasswordSession`), JWT via `account.createJWT()`.
-- API: valida `Authorization: Bearer` chamando `GET {APPWRITE_ENDPOINT}/account` com `X-Appwrite-JWT` (cache 60 s).
-- Sem `APPWRITE_PROJECT_ID` no app ou sem endpoint configurado, mensagens de erro claras são exibidas (nada é inventado).
-- **Pendente (configuração externa):** criar o projeto no Appwrite Cloud, registrar a plataforma Android
-  (package `com.gstore.app`) e configurar `APPWRITE_PROJECT_ID` (app) + `APPWRITE_API_KEY` (backend).
-
-## 9. Integração GitHub
-
-- Camada isolada (`GitHubService`) com base URLs injetáveis (testabilidade).
-- Fluxo validado de ponta a ponta: create release → upload asset em streaming (1 MB de teste + APK real de teste) → metadados no Neon → cleanup.
-- Download público: **302** para `browser_download_url` + contador + registro em `game_downloads`.
-- Repositório privado: `GITHUB_RELEASES_PRIVATE=true` → stream server-side com o token (nunca exposto).
-
-## 10. Secrets necessários
-
-Ver **`docs/SECRETS.md`**. Resumo:
-
-- Backend/API: `DATABASE_URL`, `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`, `APPWRITE_API_KEY`,
-  `GITHUB_TOKEN`, `GITHUB_RELEASES_REPO`, `GITHUB_RELEASES_PRIVATE`, `ADMIN_EMAILS`, `MAX_UPLOAD_MB`, `PORT`.
-- GitHub Actions: secret `G_STORE_GITHUB_TOKEN` (opcional, testes de integração) e
-  variável `RUN_INTEGRATION_TESTS=true` para ligá-los. `DATABASE_URL` nos secrets é usada só por esses testes.
-- App Android (público, não-secret): `GSTORE_API_BASE_URL`, `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`.
-
-## 11. Workflow criado
-
-- **ci.yml**: 3 jobs — `backend` (build + 25 testes; integração opcional com secrets),
-  `worker-legacy` (verificação sintática do Worker), `android` (testes unitários + assembleDebug + artefato APK).
-- **release.yml**: em tag `app-v*`, constrói o APK e anexa à GitHub Release (permissão `contents: write`; não destrutivo).
-
-## 12. Testes executados e resultados
-
-```
-AppwriteServiceTest      3 testes — validação JWT (fake Appwrite)
-GitHubServiceTest        3 testes — release/upload streaming/erros (fake GitHub)
-InfraUnitTest            3 testes — URL JDBC, splitter SQL dollar-quoting
-IntegrationApiTest      10 testes — health+db, listagem, busca, 404, categorias,
-                         401 sem token, fluxo completo de publicação REAL
-                         (release criada e removida no GitHub), stats, 400s
-SlugTest                 6 testes — slugify/sanitize/unique
-─────────────────────────────────────────────────────────────────
-TOTAL: 25 testes | 0 falhas | 0 pulados (com credenciais reais)
-```
-
-Bugs encontrados e corrigidos durante os testes: driver JDBC não aceita credenciais na URL
-(split user/pass no DataSource), `respondData` exigia reificação, enums precisavam de
-`@SerialName` lowercase, handler `status(404)` do StatusPages sobrescrevia 404s explícitos,
-usuário de dev não persistido (FK violation), header `Content-Length` restrito no HttpClient,
-comment-splitting do Migrator.
-
-## 13. Commits realizados
-
-| Commit | Conteúdo |
-|--------|----------|
-| `1097b58` | (pré-existente) Worker legado inicial |
-| `9a50ec8` | Base completa: backend Ktor (87 arquivos), app Android, migrações Neon, integrações Appwrite/GitHub, 25 testes, CI/CD, docs |
-
-## 14. Pendências (configuração externa / não automática)
-
-1. **Appwrite**: criar o projeto no Cloud, registrar plataforma Android (`com.gstore.app`),
-   preencher `APPWRITE_PROJECT_ID` no app e `APPWRITE_API_KEY` no backend.
-2. **Deploy da API**: escolher hospedagem (Railway/Fly.io/VPS etc.) e configurar as env vars do item 10 —
-   o CI **não** faz deploy automático (evitado por segurança, conforme solicitado).
-3. **Secrets no GitHub** (opcionais, p/ integração no CI): `DATABASE_URL`, `G_STORE_GITHUB_TOKEN`, `RUN_INTEGRATION_TESTS=true`.
-4. **Segurança do token**: o GitHub PAT e as credenciais fornecidas em texto no chat já foram
-   expostas fora do ambiente seguro — recomenda-se **rotacioná-los** após configurar os secrets.
-
-## 15. Próximos passos recomendados
-
-1. Criar projeto no Appwrite e conectar o app (desbloqueia login/publish end-to-end no app real).
-2. Fazer deploy da API e apontar `GSTORE_API_BASE_URL` para o domínio público (HTTPS).
-3. Ativar `RUN_INTEGRATION_TESTS=true` + secrets no GitHub para CI completo.
-4. Rodar o app no Android Studio (emulador: API em `http://10.0.2.2:8080`).
-5. Evoluções: painel ADMIN completo, ratings/reviews, paginação cursória, cache HTTP no app,
-   screenshots/ícone no fluxo Publish (endpoints já aceitam), atualizações incrementais de APK.
+1. **A Data API exige JWT até para leitura** — resolvido com o token
+   anónimo público (`/token/anonymous`).
+2. **O cache de schema da Data API não atualiza sozinho** — depois de
+   aplicar migrações é preciso "Refresh schema cache" na consola Neon
+   (Postgres → Data API). As tabelas novas (`profiles`, `library`,
+   `favorites`, `reviews`, vista e RPC) só ficam acessíveis depois desse
+   clique.
+3. **Neon Auth exige Origin confiável** — a origem `https://gstore.app`
+   foi registada em `neon_auth.project_config.trusted_origins` e o app
+   envia-a em todas as chamadas de autenticação.
+4. **Sem MFA/passkeys** no plano gerido — e-mail+senha cobre o necessário
+   para a G Store atualmente.

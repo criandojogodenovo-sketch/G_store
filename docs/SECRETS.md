@@ -1,64 +1,39 @@
-# Secrets necessários no GitHub
+# Segredos — G Store (v0.3.0)
 
-Configure em **Settings → Secrets and variables → Actions** (ou no
-ambiente de deploy da API). Nenhum secret vai para o código.
+## Princípio geral
 
-## Secrets (Settings → Secrets → Actions)
+O app Android **não contém nenhum segredo**. As URLs do Neon (Auth e Data
+API) e a origem confiável são dados públicos — vão dentro de qualquer APK e
+não permitem nenhuma operação privilegiada: toda a autorização é decidida no
+servidor pelas políticas RLS do Postgres, que avaliam o JWT de cada pedido.
 
-| Nome | Uso | Onde obter |
-|------|-----|------------|
-| `DATABASE_URL` | Connection string do Neon PostgreSQL. Usada APENAS nos testes de integração do CI (se habilitados). | Console do Neon → Connection string (com `-pooler`) |
-| `G_STORE_GITHUB_TOKEN` | Token GitHub (escopo `repo`) para testes de integração com Releases. O nome não pode começar com `GITHUB_` (reservado). | GitHub → Settings → Developer settings → Personal access tokens |
-| `APPWRITE_API_KEY` | API key do Appwrite — **segredo exclusivo do backend** (nunca vai no app Android). Usada para operações admin (ex.: smoke tests reais). | Appwrite Console → Overview → Integrations → API keys |
-| `KEYSTORE_BASE64` | Keystore de assinatura de release em base64 (`base64 -w0 gstore-release.jks`). | Gerado 1x com `keytool` — ver abaixo |
-| `KEYSTORE_PASSWORD` | Senha do keystore de release | Guardada pelo criador do keystore |
-| `KEY_ALIAS` | Alias da chave de release (ex.: `gstore-release`) | Definido na criação do keystore |
-| `KEY_PASSWORD` | Senha da chave de release | Guardada pelo criador do keystore |
+## Secrets do GitHub Actions (Settings → Secrets and variables → Actions)
 
-> O `GITHUB_TOKEN` padrão injetado pelos Actions já é usado no workflow
-> `release.yml` para anexar APKs — não precisa configurar nada.
+Usados **apenas** para assinar o APK de release (`release.yml`):
 
-### ⚠️ Keystore de release — regras de ouro
+| Secret | Para quê | Como obter |
+| --- | --- | --- |
+| `KEYSTORE_BASE64` | Keystore PKCS12 em base64 (decodificado no runner e apagado no fim do job) | `base64 -w0 gstore-release.jks` |
+| `KEYSTORE_PASSWORD` | Senha do keystore | Definida ao criar o keystore |
+| `KEY_ALIAS` | Alias da chave de assinatura | Definido ao criar o keystore |
+| `KEY_PASSWORD` | Senha da chave | Definida ao criar o keystore |
 
-- O ficheiro `.jks` **nunca** é commitado (o `.gitignore` já bloqueia `*.jks`).
-- **Se perder o keystore (ou as senhas), nunca mais consegue publicar
-  atualizações do app com a mesma identidade** — o Android só aceita
-  atualizações assinadas com a MESMA chave. Guarde o keystore e as senhas
-  em pelo menos dois sítios seguros (ex.: pen + cofre de passwords).
-- Gerar um novo keystore: `keytool -genkeypair -v -keystore gstore-release.jks
-  -alias gstore-release -keyalg RSA -keysize 2048 -validity 10000`
-- Para renovar no GitHub: `base64 -w0 gstore-release.jks` e atualizar o
-  secret `KEYSTORE_BASE64`.
+Não existe mais nenhum secret no repositório. (Os antigos secret de
+autenticação e de ligação à BD foram removidos — o backend que os usava
+foi apagado e a migração da BD é feita à mão pelo owner.)
 
-## Repository variables (Settings → Secrets → Variables)
+## Valores públicos do app (android/gradle.properties)
 
-| Nome | Valor esperado |
-|------|----------------|
-| `RUN_INTEGRATION_TESTS` | `true` para ligar os testes de integração no CI (exige os secrets acima). Ausente/`false` = pula os testes de integração. |
+| Propriedade | Exemplo | Nota |
+| --- | --- | --- |
+| `NEON_AUTH_URL` | `https://ep-xxx.neonauth.<região>.aws.neon.tech/neondb/auth` | Neon Console → Auth |
+| `NEON_DATA_API_URL` | `https://ep-xxx.apirest.<região>.aws.neon.tech/neondb/rest/v1` | Neon Console → Data API |
+| `NEON_AUTH_ORIGIN` | `https://gstore.app` | Tem de estar nos *trusted origins* do Neon Auth |
 
-## Ambiente de produção da API (onde a API Ktor rodar)
+## O que NUNCA vai para o Git nem para o APK
 
-| Variável | Descrição |
-|----------|-----------|
-| `DATABASE_URL` | Connection string do Neon (obrigatória) |
-| `PORT` | Porta HTTP (padrão 8080) |
-| `APPWRITE_ENDPOINT` | `https://cloud.appwrite.io/v1` (padrão do Appwrite Cloud) |
-| `APPWRITE_PROJECT_ID` | ID do projeto no Appwrite |
-| `APPWRITE_API_KEY` | API key do Appwrite (segredo; escopos: `users.read`) |
-| `GITHUB_TOKEN` | PAT com escopo `repo` para criar releases/assets dos jogos |
-| `GITHUB_RELEASES_REPO` | `owner/repo` onde os APKs ficam (padrão: este repositório) |
-| `GITHUB_RELEASES_PRIVATE` | `true` se o repositório de releases for privado |
-| `ADMIN_EMAILS` | E-mails separados por vírgula que nascem ADMIN |
-| `MAX_UPLOAD_MB` | Limite de upload do APK (padrão 200) |
-| `AUTH_DISABLED` | `false` sempre em produção (nunca `true`) |
-
-## Configuração do app Android
-
-Valores públicos (não são segredos), definidos em `android/gradle.properties`
-ou via `-P` no CI:
-
-- `GSTORE_API_BASE_URL` — URL pública da API (padrão `http://10.0.2.2:8080` para emulador)
-- `APPWRITE_ENDPOINT` — endpoint do Appwrite
-- `APPWRITE_PROJECT_ID` — ID do projeto Appwrite
-
-A `APPWRITE_API_KEY` e o `GITHUB_TOKEN` NUNCA são compilados no app.
+- `DATABASE_URL` (connection string do Postgres) — usada apenas por quem
+  aplica migrações/gerencia a BD à mão.
+- Token pessoal do GitHub (`ghp_...`) — apenas para administração local.
+- As 4 senhas de assinatura (ficam só nos secrets do GitHub + backup
+  pessoal do keystore).

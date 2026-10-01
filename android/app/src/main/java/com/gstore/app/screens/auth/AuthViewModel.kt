@@ -3,12 +3,14 @@ package com.gstore.app.screens.auth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.gstore.app.data.remote.Role
-import com.gstore.app.data.remote.UserProfileDto
+import com.gstore.app.data.remote.ApiException
 import com.gstore.app.data.repo.GStoreRepository
+import com.gstore.app.data.repo.ProfileDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
+import java.io.IOException
 
 class AuthViewModel(private val repository: GStoreRepository) : ViewModel() {
 
@@ -18,8 +20,8 @@ class AuthViewModel(private val repository: GStoreRepository) : ViewModel() {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    private val _success = MutableStateFlow<UserProfileDto?>(null)
-    val success: StateFlow<UserProfileDto?> = _success
+    private val _success = MutableStateFlow<ProfileDto?>(null)
+    val success: StateFlow<ProfileDto?> = _success
 
     fun login(email: String, password: String) {
         if (email.isBlank() || password.isBlank()) {
@@ -51,20 +53,25 @@ class AuthViewModel(private val repository: GStoreRepository) : ViewModel() {
         }
     }
 
-    fun becomeDeveloper() {
-        viewModelScope.launch {
-            repository.becomeDeveloper()
-                .onSuccess { _success.value = it }
-        }
-    }
-
+    /**
+     * Mostra o ERRO REAL do servidor (código + mensagem) para o utilizador
+     * poder diagnosticar — sem mensagens genéricas.
+     */
     private fun readable(t: Throwable): String {
         val msg = t.message ?: return "Falha na autenticação"
-        return when {
-            msg.contains("configurado") || msg.contains("APPWRITE") -> msg
-            msg.contains("invalid_credentials", true) || msg.contains("password", true) -> "E-mail ou senha incorretos."
-            msg.contains("user_already_exists", true) -> "Já existe uma conta com este e-mail."
-            else -> "Falha na autenticação: verifique a configuração do Appwrite."
+        return when (t) {
+            is ApiException -> {
+                when (t.errorCode) {
+                    "INVALID_EMAIL_OR_PASSWORD" -> "E-mail ou senha incorretos. (INVALID_EMAIL_OR_PASSWORD)"
+                    "USER_ALREADY_EXISTS", "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL" ->
+                        "Já existe uma conta com este e-mail. (USER_ALREADY_EXISTS)"
+                    "INVALID_ORIGIN" -> "Origem do app não registada no Neon Auth. (INVALID_ORIGIN)"
+                    else -> "$msg"
+                }
+            }
+            is HttpException -> "HTTP ${t.code()}: $msg"
+            is IOException -> "Sem ligação ao Neon ($msg). Verifique a internet e tente novamente."
+            else -> msg
         }
     }
 

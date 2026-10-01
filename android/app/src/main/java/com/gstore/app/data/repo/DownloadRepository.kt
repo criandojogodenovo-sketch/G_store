@@ -4,25 +4,24 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
-import com.gstore.app.BuildConfig
 
 /**
  * Fluxo de download de APKs.
  *
- * A API redireciona (302) para o asset do GitHub Releases — o DownloadManager
- * do sistema segue o redirect e baixa com notificação/progresso nativo.
- * O usuário final só vê "G Store baixando o jogo".
+ * As URLs dos APKs vivem na tabela `game_versions` (criadas pelo admin
+ * na área de administração) e apontam para o GitHub Releases — o
+ * DownloadManager do sistema baixa direto do GitHub, sem nenhum
+ * intermediário nem token (o repositório é público).
  */
 class DownloadRepository(private val context: Context) {
 
     /** Inicia o download do APK do jogo e retorna o id do DownloadManager. */
-    fun startDownload(slug: String, name: String, version: String?): Long {
-        val url = "${BuildConfig.API_BASE_URL.trimEnd('/')}/api/games/$slug/download"
-        val request = DownloadManager.Request(Uri.parse(url)).apply {
-            setTitle("$name${version?.let { " $it" } ?: ""}")
+    fun startDownload(slug: String, name: String, version: GameVersionDto): Long {
+        val request = DownloadManager.Request(Uri.parse(version.apkUrl)).apply {
+            setTitle("$name ${version.version}")
             setDescription("Download do APK via G Store")
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "GStore/$slug.apk")
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "GStore/$slug-${version.version}.apk")
             setAllowedOverMetered(true)
             setAllowedOverRoaming(true)
         }

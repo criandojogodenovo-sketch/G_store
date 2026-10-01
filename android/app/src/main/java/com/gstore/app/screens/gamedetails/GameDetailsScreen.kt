@@ -19,6 +19,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -26,26 +29,32 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.gstore.app.data.repo.ReviewDto
 import com.gstore.app.ui.components.ErrorState
-import com.gstore.app.ui.components.GameIconPlaceholder
 import com.gstore.app.ui.components.MetaChip
 import com.gstore.app.ui.components.formatDownloads
 
 /**
- * Tela de detalhes do jogo: ícone, título, developer, versão, screenshots,
- * descrição, downloads e o botão Download com feedback visual completo
- * (preparando -> progresso -> sucesso/erro -> tentar novamente).
+ * Tela de detalhes do jogo: ícone, título, developer, versão, tamanho,
+ * categoria, screenshots, descrição, notas e comentários + botão Baixar
+ * (GitHub Releases) e favoritos.
  */
 @Composable
 fun GameDetailsScreen(
@@ -57,6 +66,11 @@ fun GameDetailsScreen(
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val downloadState by viewModel.downloadState.collectAsState()
+    val favorite by viewModel.favorite.collectAsState()
+    val reviews by viewModel.reviews.collectAsState()
+    val myReview by viewModel.myReview.collectAsState()
+    val loggedIn by viewModel.loggedIn.collectAsState()
+    val averageRating by viewModel.averageRating.collectAsState()
 
     LaunchedEffect(Unit) { viewModel.load() }
 
@@ -109,15 +123,35 @@ fun GameDetailsScreen(
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "v${g.version ?: "—"} • ${formatDownloads(g.downloads)} downloads",
+                                buildString {
+                                    append("v${g.version ?: "—"}")
+                                    append(" • ${formatDownloads(g.downloads)} downloads")
+                                    viewModel.latestVersion()?.apkSizeBytes?.let {
+                                        append(" • ${"%.1f".format(it / 1024f / 1024f)} MB")
+                                    }
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = viewModel::toggleFavorite) {
+                            Icon(
+                                if (favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                contentDescription = if (favorite) "Remover dos favoritos" else "Adicionar aos favoritos",
+                                tint = if (favorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
 
                     Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        averageRating?.let {
+                            MetaChip("★ %.1f".format(it))
+                        }
+                        MetaChip("${reviews.size} avaliações")
                         g.categories.take(3).forEach { MetaChip(it) }
                     }
 
@@ -186,9 +220,133 @@ fun GameDetailsScreen(
                             }
                         }
                     }
+
+                    // ── Avaliações e comentários ──────────────────────
+                    Spacer(Modifier.height(24.dp))
+                    Text("Avaliações e comentários", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    if (loggedIn) {
+                        ReviewForm(myReview, onSubmit = { rating, comment, done ->
+                            viewModel.submitReview(rating, comment, done)
+                        })
+                    } else {
+                        Text(
+                            "Entre na sua conta para avaliar este jogo.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    if (reviews.isEmpty()) {
+                        Text(
+                            "Ainda não há avaliações — seja o primeiro!",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        reviews.forEach { r -> ReviewItem(r) }
+                    }
                     Spacer(Modifier.height(32.dp))
                 }
             }
+        }
+    }
+}
+
+/** Formulário de avaliação (1–5 estrelas + comentário). */
+@Composable
+private fun ReviewForm(
+    myReview: MyReview?,
+    onSubmit: (rating: Int, comment: String, onDone: (Boolean) -> Unit) -> Unit,
+) {
+    var rating by remember(myReview) { mutableIntStateOf(myReview?.rating ?: 0) }
+    var comment by remember(myReview) { mutableStateOf(myReview?.comment ?: "") }
+    var sending by remember { mutableStateOf(false) }
+    var feedback by remember { mutableStateOf<String?>(null) }
+
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Sua nota: ", style = MaterialTheme.typography.bodyMedium)
+            (1..5).forEach { estrela ->
+                IconButton(
+                    onClick = { rating = estrela },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = "$estrela estrelas",
+                        tint = if (estrela <= rating) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = comment,
+            onValueChange = { comment = it },
+            label = { Text(if (myReview != null) "Editar comentário" else "Comentário (opcional)") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        feedback?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = {
+                if (rating < 1) {
+                    feedback = "Escolha de 1 a 5 estrelas."
+                    return@OutlinedButton
+                }
+                sending = true
+                feedback = null
+                onSubmit(rating, comment) { ok ->
+                    sending = false
+                    feedback = if (ok) null else "Não foi possível guardar a avaliação."
+                }
+            },
+            enabled = !sending,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(46.dp),
+        ) {
+            if (sending) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            else Text(if (myReview != null) "Atualizar avaliação" else "Enviar avaliação")
+        }
+    }
+}
+
+@Composable
+private fun ReviewItem(r: ReviewDto) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            repeat(r.rating) {
+                Icon(
+                    Icons.Filled.Star,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                r.authorName ?: "Jogador",
+                style = MaterialTheme.typography.titleSmall,
+            )
+        }
+        if (!r.comment.isNullOrBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                r.comment,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

@@ -5,7 +5,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.gstore.app.data.remote.GameDto
+import com.gstore.app.data.repo.GameDto
 import com.gstore.app.data.repo.GStoreRepository
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,17 +20,66 @@ data class LibraryItem(
     val progress: Int,
 )
 
+data class LibraryUiState(
+    val downloads: List<LibraryItem> = emptyList(),
+    val favorites: List<GameDto> = emptyList(),
+    val loadingFavorites: Boolean = false,
+    val loggedIn: Boolean = false,
+    val error: String? = null,
+)
+
+/**
+ * Biblioteca: jogos baixados (DownloadManager + tabela `library`) e
+ * favoritos do utilizador (tabela `favorites`).
+ */
 class LibraryViewModel(private val repository: GStoreRepository) : ViewModel() {
 
-    private val _items = MutableStateFlow<List<LibraryItem>>(emptyList())
-    val items: StateFlow<List<LibraryItem>> = _items
+    private val _state = MutableStateFlow(LibraryUiState())
+    val state: StateFlow<LibraryUiState> = _state
+
+    private var observing = false
 
     fun observe(context: Context) {
+        if (observing) return
+        observing = true
         viewModelScope.launch {
             while (true) {
-                _items.value = queryDownloads(context)
+                val local = queryDownloads(context)
+                _state.value = _state.value.copy(downloads = local)
                 delay(1500)
             }
+        }
+        refresh()
+    }
+
+    /** Recarrega favoritos/biblioteca do servidor (se autenticado). */
+    fun refresh() {
+        viewModelScope.launch {
+            val loggedIn = repository.currentUser() != null
+            _state.value = _state.value.copy(
+                loggedIn = loggedIn,
+                loadingFavorites = true,
+                error = null,
+            )
+            if (!loggedIn) {
+                _state.value = _state.value.copy(favorites = emptyList(), loadingFavorites = false)
+                return@launch
+            }
+            try {
+                val favorites = repository.listFavorites()
+                _state.value = _state.value.copy(favorites = favorites, loadingFavorites = false)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    loadingFavorites = false,
+                    error = e.message ?: "Falha ao carregar favoritos",
+                )
+            }
+        }
+    }
+
+    fun removeFavorite(gameId: String) {
+        viewModelScope.launch {
+            repository.removeFavorite(gameId).onSuccess { refresh() }
         }
     }
 

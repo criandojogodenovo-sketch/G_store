@@ -5,51 +5,58 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Testes do verificador de configuração do Appwrite (valores públicos
- * do cliente). A APPWRITE_API_KEY nunca faz parte desta verificação
- * porque é segredo exclusivo do backend.
+ * Testes do verificador de configuração do Neon (valores públicos do
+ * cliente: URLs do Auth/Data API e origem de confiança). Não existem
+ * segredos envolvidos — a autorização é feita por RLS no Postgres.
  */
 class ConfigCheckTest {
 
+    private val authUrl = "https://ep-exemplo.neonauth.us-east-2.aws.neon.tech/neondb/auth"
+    private val dataApiUrl = "https://ep-exemplo.apirest.us-east-2.aws.neon.tech/neondb/rest/v1"
+    private val origin = "https://gstore.app"
+
     @Test
     fun `configuração completa não devolve faltas`() {
-        val faltam = ConfigCheck.missingValues(
-            endpoint = "https://fra.cloud.appwrite.io/v1",
-            projectId = "6abe7ca20035c289a748",
-        )
+        val faltam = ConfigCheck.missingValues(authUrl, dataApiUrl, origin)
         assertTrue("Não devia faltar nada", faltam.isEmpty())
     }
 
     @Test
-    fun `project id em branco é detetado`() {
-        val faltam = ConfigCheck.missingValues(
-            endpoint = "https://fra.cloud.appwrite.io/v1",
-            projectId = "",
-        )
-        assertEquals(listOf("APPWRITE_PROJECT_ID"), faltam)
+    fun `auth url em branco é detetado`() {
+        val faltam = ConfigCheck.missingValues("", dataApiUrl, origin)
+        assertEquals(listOf("NEON_AUTH_URL"), faltam)
     }
 
     @Test
-    fun `endpoint em branco é detetado`() {
-        val faltam = ConfigCheck.missingValues(
-            endpoint = "",
-            projectId = "6abe7ca20035c289a748",
-        )
-        assertEquals(listOf("APPWRITE_ENDPOINT"), faltam)
+    fun `data api url em branco é detetado`() {
+        val faltam = ConfigCheck.missingValues(authUrl, "", origin)
+        assertEquals(listOf("NEON_DATA_API_URL"), faltam)
     }
 
     @Test
-    fun `endpoint não https é recusado`() {
-        val faltam = ConfigCheck.missingValues(
-            endpoint = "http://fra.cloud.appwrite.io/v1",
-            projectId = "6abe7ca20035c289a748",
-        )
-        assertEquals(listOf("APPWRITE_ENDPOINT"), faltam)
+    fun `origin em branco é detetado`() {
+        val faltam = ConfigCheck.missingValues(authUrl, dataApiUrl, "")
+        assertEquals(listOf("NEON_AUTH_ORIGIN"), faltam)
     }
 
     @Test
-    fun `tudo em falta devolve os dois valores`() {
-        val faltam = ConfigCheck.missingValues(endpoint = " ", projectId = " ")
-        assertEquals(listOf("APPWRITE_ENDPOINT", "APPWRITE_PROJECT_ID"), faltam)
+    fun `url não https é recusada`() {
+        val faltam = ConfigCheck.missingValues("http://ep-exemplo.neonauth...", dataApiUrl, origin)
+        assertEquals(listOf("NEON_AUTH_URL"), faltam)
+    }
+
+    @Test
+    fun `origin não https é recusada`() {
+        val faltam = ConfigCheck.missingValues(authUrl, dataApiUrl, "http://gstore.app")
+        assertEquals(listOf("NEON_AUTH_ORIGIN"), faltam)
+    }
+
+    @Test
+    fun `tudo em falta devolve os três valores`() {
+        val faltam = ConfigCheck.missingValues(" ", " ", " ")
+        assertEquals(
+            listOf("NEON_AUTH_URL", "NEON_DATA_API_URL", "NEON_AUTH_ORIGIN"),
+            faltam,
+        )
     }
 }

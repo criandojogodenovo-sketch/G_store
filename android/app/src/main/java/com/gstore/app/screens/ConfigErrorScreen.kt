@@ -25,8 +25,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * Ecrã de erro exibido no arranque quando a configuração pública do
- * Appwrite está em falta ou inválida. O objetivo é que o problema seja
+ * Ecrã de erro exibido no arranque quando a configuração pública do Neon
+ * (Auth/Data API) está em falta ou inválida. O objetivo é que o problema seja
  * IMEDIATAMENTE visível (em vez de "login falhou" genérico).
  */
 @Composable
@@ -54,8 +54,8 @@ fun ConfigErrorScreen(missing: List<String>) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "O app não consegue falar com o serviço de contas " +
-                    "(Appwrite) porque faltam estes valores:",
+                text = "O app não consegue falar com o Neon (contas e catálogo) " +
+                    "porque faltam estes valores:",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(16.dp))
@@ -77,10 +77,12 @@ fun ConfigErrorScreen(missing: List<String>) {
                         )
                         Text(
                             text = when (valor) {
-                                "APPWRITE_ENDPOINT" ->
-                                    "Endereço do Appwrite em falta (tem de começar por https://)."
-                                "APPWRITE_PROJECT_ID" ->
-                                    "ID do projeto Appwrite em falta."
+                                "NEON_AUTH_URL" ->
+                                    "URL do Neon Auth em falta (tem de começar por https://)."
+                                "NEON_DATA_API_URL" ->
+                                    "URL da Neon Data API em falta (tem de começar por https://)."
+                                "NEON_AUTH_ORIGIN" ->
+                                    "Origem de confiança do Neon Auth em falta."
                                 else -> "Valor de configuração em falta."
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -91,10 +93,10 @@ fun ConfigErrorScreen(missing: List<String>) {
 
             Spacer(Modifier.height(16.dp))
             Text(
-                text = "Como resolver: defina APPWRITE_ENDPOINT e APPWRITE_PROJECT_ID " +
-                    "em android/gradle.properties (ou via -P... no comando de build). " +
-                    "Estes valores são públicos. A APPWRITE_API_KEY é um SEGREDO e nunca " +
-                    "vai no app — fica apenas no backend.",
+                text = "Como resolver: defina NEON_AUTH_URL, NEON_DATA_API_URL e " +
+                    "NEON_AUTH_ORIGIN em android/gradle.properties (ou via -P... no " +
+                    "comando de build). Estes valores são públicos — a segurança é " +
+                    "garantida por RLS no Postgres, não por segredos no app.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Spacer(Modifier.height(24.dp))

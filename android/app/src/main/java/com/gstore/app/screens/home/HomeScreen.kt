@@ -13,24 +13,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.gstore.app.data.remote.GameDto
+import com.gstore.app.data.repo.GameDto
 import com.gstore.app.ui.components.ErrorState
 import com.gstore.app.ui.components.FeaturedGameCard
 import com.gstore.app.ui.components.FeaturedSkeleton
@@ -40,7 +39,7 @@ import com.gstore.app.ui.components.MetaChip
 
 /**
  * Home da G Store: destaques, recentes, categorias e grid de jogos.
- * Skeleton loading durante o carregamento; empty/error states completos.
+ * Skeleton loading, puxar-para-atualizar e fallback offline (cache).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +50,7 @@ fun HomeScreen(
     onOpenCategory: (String) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
+    val refreshing by viewModel.refreshing.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Cabeçalho com saudação e acesso à busca
@@ -82,14 +82,19 @@ fun HomeScreen(
             }
         }
 
-        when (val s = state) {
-            is HomeUiState.Loading -> HomeSkeleton()
-            is HomeUiState.Error -> ErrorState(message = s.message, onRetry = { viewModel.load() })
-            is HomeUiState.Ready -> HomeContent(
-                state = s,
-                onOpenGame = onOpenGame,
-                onOpenCategory = onOpenCategory,
-            )
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = { viewModel.refresh() },
+        ) {
+            when (val s = state) {
+                is HomeUiState.Loading -> HomeSkeleton()
+                is HomeUiState.Error -> ErrorState(message = s.message, onRetry = { viewModel.load() })
+                is HomeUiState.Ready -> HomeContent(
+                    state = s,
+                    onOpenGame = onOpenGame,
+                    onOpenCategory = onOpenCategory,
+                )
+            }
         }
     }
 }
@@ -104,6 +109,35 @@ private fun HomeContent(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
+        if (state.fromCache) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.WifiOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "Sem ligação — a mostrar o último catálogo guardado.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+        }
+
         if (state.featured.isNotEmpty()) {
             item {
                 SectionTitle("Destaques")

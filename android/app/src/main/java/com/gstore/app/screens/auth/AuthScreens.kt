@@ -28,7 +28,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 
-/** Tela de Login — autenticação direta no Appwrite (sem duplicação). */
+/** Tela de Login — autenticação direta no Neon Auth (Better Auth). */
 @Composable
 fun LoginScreen(
     viewModel: AuthViewModel,
@@ -109,7 +109,7 @@ fun LoginScreen(
     }
 }
 
-/** Tela de Registro — cria usuário no Appwrite e sincroniza com a API. */
+/** Tela de Registro — cria a conta no Neon Auth e o perfil local. */
 @Composable
 fun RegisterScreen(
     viewModel: AuthViewModel,

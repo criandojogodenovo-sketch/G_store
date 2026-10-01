@@ -5,238 +5,617 @@ import com.gstore.app.BuildConfig
 import com.gstore.app.ConfigCheck
 import com.gstore.app.data.local.SessionStore
 import com.gstore.app.data.remote.ApiClient
-import com.gstore.app.data.remote.CategoryDto
+import com.gstore.app.data.remote.ApiException
+import com.gstore.app.data.remote.AuthErrorBody
+import com.gstore.app.data.remote.AuthUser
 import com.gstore.app.data.remote.CreateGameBody
-import com.gstore.app.data.remote.GameDto
-import com.gstore.app.data.remote.GameVersionDto
-import com.gstore.app.data.remote.GStoreApi
+import com.gstore.app.data.remote.CreateVersionBody
+import com.gstore.app.data.remote.GameCategoryLinkBody
+import com.gstore.app.data.remote.GameRow
+import com.gstore.app.data.remote.GameVersionRow
+import com.gstore.app.data.remote.NotAuthenticatedException
+import com.gstore.app.data.remote.RegisterDownloadBody
 import com.gstore.app.data.remote.Role
+import com.gstore.app.data.remote.SignInBody
+import com.gstore.app.data.remote.SignUpBody
 import com.gstore.app.data.remote.UpdateGameBody
-import com.gstore.app.data.remote.UpdateProfileBody
-import com.gstore.app.data.remote.UserProfileDto
-import io.appwrite.Client
-import io.appwrite.ID
-import io.appwrite.services.Account
-import kotlinx.serialization.json.Json
-import okhttp3.MediaType
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody
-import okhttp3.RequestBody.Companion.asRequestBody
-import okio.BufferedSink
-import java.io.File
+import com.gstore.app.data.remote.UpdateUserBody
+import com.gstore.app.data.remote.UpsertProfileBody
+import com.gstore.app.data.remote.UpsertReviewBody
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
 
 /**
- * Repositório central do app: descoberta de jogos (API Ktor) e autenticação
- * (Appwrite). A API valida o JWT emitido pelo Appwrite — não existe um
- * segundo sistema de login.
- *
- * O GitHub token e a API key do Appwrite ficam SOMENTE no backend.
+ * Repositório central do app: autenticação (Neon Auth) + dados (Neon
+ * Data API com RLS). Não existe servidor próprio — o app fala
+ * diretamente com o Neon, e o Postgres decide o que cada token pode fazer.
  */
 class GStoreRepository private constructor(
     private val context: Context,
     private val sessionStore: SessionStore,
 ) {
 
-    /* --------------------------- Appwrite --------------------------- */
+    private val json get() = ApiClient.json
+    private val authApi get() = ApiClient.authApi
+    private val dataApi get() = ApiClient.dataApi
+    private val cache = CatalogCache(context)
 
-    private fun appwriteClient(): Client {
-        val faltam = ConfigCheck.missingValues(
-            BuildConfig.APPWRITE_ENDPOINT,
-            BuildConfig.APPWRITE_PROJECT_ID,
-        )
-        if (faltam.isNotEmpty()) {
-            throw IllegalStateException(
-                "Appwrite não configurado: falta ${faltam.joinToString(", ")}. " +
-                    "Defina em android/gradle.properties ou nos secrets do CI.",
-            )
+    private val jwtMutex = Mutex()
+    private val anonMutex = Mutex()
+
+    /* ═══════════════════ Autenticação (Neon Auth) ═══════════════════ */
+
+    /** Registo + login automático + criação do perfil local. */
+    suspend fun register(name: String, email: String, password: String): Result<ProfileDto> = runCatching {
+        checkConfig()
+        val resp = authApi.signUp(SignUpBody(name = name, email = email, password = password))
+        if (!resp.isSuccessful) {
+            val err = parseAuthError(resp.errorBody()?.string())
+            throw ApiException(resp.code(), err?.code, err?.message ?: "Falha no registo")
         }
-        return Client(context)
-            .setEndpoint(BuildConfig.APPWRITE_ENDPOINT)
-            .setProject(BuildConfig.APPWRITE_PROJECT_ID)
+        val body = resp.body() ?: throw ApiException(resp.code(), null, "Resposta vazia do Neon Auth")
+        val user = body.user ?: throw ApiException(resp.code(), null, "Registo sem utilizador")
+        adoptSession(resp.headers().values("Set-Cookie"), user)
+        ensureProfile(user)
     }
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-        isLenient = true
+    /** Login por e-mail/senha (Better Auth). */
+    suspend fun login(email: String, password: String): Result<ProfileDto> = runCatching {
+        checkConfig()
+        val resp = authApi.signIn(SignInBody(email = email, password = password))
+        if (!resp.isSuccessful) {
+            val err = parseAuthError(resp.errorBody()?.string())
+            throw ApiException(resp.code(), err?.code, err?.message ?: "Falha no login")
+        }
+        val body = resp.body() ?: throw ApiException(resp.code(), null, "Resposta vazia do Neon Auth")
+        val user = body.user ?: throw ApiException(resp.code(), null, "Login sem utilizador")
+        adoptSession(resp.headers().values("Set-Cookie"), user)
+        ensureProfile(user)
     }
 
-    /** Registro no Appwrite (usuário criado lá), login e sync do perfil. */
-    suspend fun register(name: String, email: String, password: String): Result<UserProfileDto> = runCatching {
-        val account = Account(appwriteClient())
-        account.create(userId = ID.unique(), email = email, password = password, name = name)
-        login(email, password).getOrThrow()
-    }
-
-    /** Login no Appwrite e sincronização do perfil com a API. */
-    suspend fun login(email: String, password: String): Result<UserProfileDto> = runCatching {
-        val account = Account(appwriteClient())
-        account.createEmailPasswordSession(email, password)
-        val jwt = account.createJWT().jwt
-        sessionStore.save(jwt = jwt, userId = null, email = email, displayName = null)
-        syncProfile(jwt)
-    }
-
+    /** Termina a sessão no servidor e limpa o dispositivo. */
     suspend fun logout(): Result<Unit> = runCatching {
-        runCatching { Account(appwriteClient()).deleteSession("current") }
+        ensureAuthCookie()
+        runCatching { authApi.signOut() }
+        ApiClient.sessionCookie = null
+        ApiClient.dataToken = null
         sessionStore.clearAll()
     }
 
-    /** JWT válido (renova a cada chamada — token do Appwrite dura ~15 min). */
-    suspend fun freshJwt(): String? = runCatching {
-        if (BuildConfig.APPWRITE_PROJECT_ID.isBlank()) return@runCatching null
-        val session = sessionStore.current()
-        val jwt = Account(appwriteClient()).createJWT().jwt
-        sessionStore.save(
-            jwt = jwt,
-            userId = session.appwriteUserId,
-            email = session.email,
-            displayName = session.displayName,
-        )
+    /** Utilizador autenticado atual (null se não houver sessão válida). */
+    suspend fun currentUser(): AuthUser? {
+        ensureAuthCookie()
+        if (ApiClient.sessionCookie.isNullOrBlank()) return null
+        return runCatching {
+            val resp = authApi.getSession()
+            resp.body()?.user
+        }.getOrNull()
+    }
+
+    /** Altera o nome de exibição (Neon Auth + perfil local). */
+    suspend fun updateDisplayName(displayName: String): Result<ProfileDto> = runCatching {
+        ensureAuthCookie()
+        authApi.updateUser(UpdateUserBody(name = displayName))
+        val uid = requireUserId()
+        ensureDataToken()
+        runCatching {
+            dataApi.updateProfileRow(
+                mapOf("id" to "eq.$uid"),
+                com.gstore.app.data.remote.UpdateProfileRowBody(displayName = displayName),
+            )
+        }
+        currentProfile() ?: throw ApiException(500, null, "Perfil não encontrado após renomear")
+    }
+
+    /* ---------------- Tokens para a Data API ---------------- */
+
+    /** Restaura o cookie guardado (após reinício do app, por exemplo). */
+    private suspend fun ensureAuthCookie() {
+        if (ApiClient.sessionCookie == null) {
+            ApiClient.sessionCookie = sessionStore.current().cookie
+        }
+    }
+
+    /**
+     * Garante que o ApiClient tem um JWT válido para a Data API:
+     * do utilizador (15 min, renovável via get-session) ou anónimo (1 h).
+     */
+    private suspend fun ensureDataToken(): String? {
+        if (ApiClient.sessionCookie == null) {
+            ensureAuthCookie()
+        }
+        val token = if (ApiClient.sessionCookie.isNullOrBlank()) {
+            anonymousTokenOrNull()
+        } else {
+            userJwtOrNull() ?: anonymousTokenOrNull()
+        }
+        ApiClient.dataToken = token
+        return token
+    }
+
+    private suspend fun userJwtOrNull(): String? {
+        val cached = sessionStore.jwt()
+        val now = System.currentTimeMillis()
+        if (!cached.token.isNullOrBlank() && cached.expiresAt != null && cached.expiresAt > now + 60_000) {
+            return cached.token
+        }
+        return refreshUserJwtOrNull()
+    }
+
+    private suspend fun refreshUserJwtOrNull(): String? = jwtMutex.withLock {
+        // Outra coroutine pode ter renovado entretanto.
+        val cached = sessionStore.jwt()
+        val now = System.currentTimeMillis()
+        if (!cached.token.isNullOrBlank() && cached.expiresAt != null && cached.expiresAt > now + 60_000) {
+            return@withLock cached.token
+        }
+        val resp = runCatching { authApi.getSession() }.getOrNull() ?: return@withLock null
+        if (!resp.isSuccessful) return@withLock null
+        val jwt = resp.headers().values("set-auth-jwt").firstOrNull() ?: return@withLock null
+        val exp = ApiClient.jwtExpiry(jwt) ?: (System.currentTimeMillis() / 1000 + 840)
+        sessionStore.saveJwt(jwt, exp)
         jwt
-    }.getOrNull()
+    }
 
-    suspend fun syncProfile(jwt: String): UserProfileDto {
-        val profile = authenticatedApi().syncSession().data
+    /** Token anónimo público (leitura do catálogo sem login). */
+    private suspend fun anonymousTokenOrNull(): String? = anonMutex.withLock {
+        val cached = sessionStore.anonymousToken()
+        val now = System.currentTimeMillis()
+        if (!cached.token.isNullOrBlank() && cached.expiresAt != null && cached.expiresAt > now + 60_000) {
+            return@withLock cached.token
+        }
+        val resp = runCatching { authApi.anonymousToken() }.getOrNull() ?: return@withLock null
+        sessionStore.saveAnonymousToken(resp.token, resp.expiresAt)
+        resp.token
+    }
+
+    private suspend fun adoptSession(setCookies: List<String>, user: AuthUser) {
+        val cookie = parseSessionCookie(setCookies)
+        if (cookie != null) {
+            ApiClient.sessionCookie = cookie
+            sessionStore.save(cookie = cookie)
+        }
+        sessionStore.clearJwt()
+        ApiClient.dataToken = null
         sessionStore.save(
-            jwt = jwt,
-            userId = profile.appwriteUserId,
-            email = profile.email,
-            displayName = profile.displayName,
+            userId = user.id,
+            email = user.email,
+            displayName = user.name,
+            avatarUrl = user.image,
         )
-        return profile
     }
 
-    suspend fun currentProfile(): UserProfileDto? {
-        val jwt = freshJwt() ?: return null
-        return runCatching { authenticatedApi().profile().data }.getOrNull()
+    private fun parseSessionCookie(setCookies: List<String>): String? {
+        val name = "__Secure-neon-auth.session_token="
+        for (header in setCookies) {
+            val idx = header.indexOf(name)
+            if (idx >= 0) {
+                val value = header.substring(idx + name.length).substringBefore(';').trim()
+                if (value.isNotBlank()) return value
+            }
+        }
+        return null
     }
 
-    suspend fun becomeDeveloper(): Result<UserProfileDto> = runCatching {
-        authenticatedApi().becomeDeveloper().data
-    }
-
-    suspend fun updateProfile(displayName: String?): Result<UserProfileDto> = runCatching {
-        authenticatedApi().updateProfile(UpdateProfileBody(displayName = displayName)).data
-    }
-
-    /* --------------------------- Catálogo --------------------------- */
-
-    private val publicApi: GStoreApi get() = ApiClient.api
-
-    private suspend fun authenticatedApi(): GStoreApi {
+    private suspend fun requireUserId(): String {
+        ensureAuthCookie()
         val session = sessionStore.current()
-        return ApiClient.authenticatedApi { session.jwt }
+        if (!session.cookie.isNullOrBlank()) {
+            session.userId?.let { return it }
+            currentUser()?.let { return it.id }
+        }
+        throw NotAuthenticatedException()
     }
 
-    suspend fun listGames(
-        search: String? = null,
-        category: String? = null,
-        sort: String? = null,
-        limit: Int = 50,
-    ): List<GameDto> =
-        publicApi.listGames(search = search, category = category, sort = sort, limit = limit).games
+    /* ---------------- Perfil (tabela profiles) ---------------- */
 
-    suspend fun getGame(slug: String): GameDto = publicApi.getGame(slug).data
+    /** Garante que o utilizador autenticado tem linha em `profiles`. */
+    private suspend fun ensureProfile(user: AuthUser): ProfileDto {
+        val uid = user.id
+        ensureDataToken()
+        val existing = dataApi.listProfiles(mapOf("id" to "eq.$uid", "select" to "*"))
+        if (existing.isNotEmpty()) {
+            val row = existing.first()
+            sessionStore.save(displayName = row.displayName, avatarUrl = row.avatarUrl)
+            return row.toDto(email = user.email)
+        }
+        val created = try {
+            dataApi.insertProfile(
+                UpsertProfileBody(
+                    id = uid,
+                    displayName = user.name ?: (user.email?.substringBefore('@') ?: "Jogador"),
+                    avatarUrl = user.image,
+                    role = "user",
+                ),
+            )
+        } catch (e: retrofit2.HttpException) {
+            // Corrida de criação dupla: a linha já existe — releitura.
+            if (e.code() == 409) {
+                dataApi.listProfiles(mapOf("id" to "eq.$uid")).firstOrNull()
+                    ?: throw e
+            } else {
+                throw e
+            }
+        }
+        sessionStore.save(displayName = created.displayName, avatarUrl = created.avatarUrl)
+        return created.toDto(email = user.email)
+    }
 
-    suspend fun listCategories(): List<CategoryDto> = publicApi.listCategories().categories
+    /** Perfil do utilizador atual (null se não autenticado). */
+    suspend fun currentProfile(): ProfileDto? {
+        ensureAuthCookie()
+        val session = sessionStore.current()
+        if (session.cookie.isNullOrBlank()) return null
+        val uid = session.userId ?: currentUser()?.id ?: return null
+        ensureDataToken()
+        val rows = runCatching { dataApi.listProfiles(mapOf("id" to "eq.$uid")) }.getOrNull() ?: return null
+        return rows.firstOrNull()?.toDto(email = session.email)
+    }
 
-    suspend fun listVersions(gameId: String): List<GameVersionDto> =
-        publicApi.listVersions(gameId).versions
+    suspend fun isAdmin(): Boolean = currentProfile()?.role == Role.ADMIN
 
-    /** Estatísticas de download do jogo (dono/admin). */
-    suspend fun downloadStats(gameId: String): com.gstore.app.data.remote.DownloadStatsResponse =
-        authenticatedApi().downloadStats(gameId)
+    /* ═══════════════════ Catálogo (leitura pública) ═══════════════════ */
 
-    /* ----------------------- Developer / publicação ----------------------- */
+    /**
+     * Carrega o catálogo completo (publicado; admin vê também rascunhos)
+     * com versões e categorias embutidas. Grava em cache local para uso
+     * offline e devolve o resultado já mapeado.
+     */
+    suspend fun fetchCatalog(includeDrafts: Boolean = false): Pair<List<GameDto>, List<CategoryDto>> {
+        checkConfig()
+        ensureDataToken()
+        val filters = mutableMapOf(
+            "select" to "*,game_versions(*),game_categories(categories(*))",
+            "order" to "created_at.desc",
+            "limit" to "500",
+        )
+        if (!includeDrafts) filters["status"] = "eq.published"
+        val games = dataApi.listGames(filters).map { it.toDto() }
+        val categories = dataApi.listCategories(mapOf("order" to "sort_order.asc")).map { it.toDto() }
 
-    suspend fun createGame(name: String, description: String?, category: String?): Result<GameDto> = runCatching {
-        authenticatedApi().createGame(CreateGameBody(name = name, description = description, category = category)).data
+        cache.save(games, categories)
+        return games to categories
+    }
+
+    /** Catálogo em cache (última leitura bem-sucedida; null se nunca houve). */
+    fun cachedCatalog(): Pair<List<GameDto>, List<CategoryDto>>? = cache.load()
+
+    suspend fun getGame(slug: String): GameDto {
+        checkConfig()
+        ensureDataToken()
+        val rows = dataApi.getGame(
+            mapOf(
+                "slug" to "eq.$slug",
+                "select" to "*,game_versions(*),game_categories(categories(*))",
+            ),
+        )
+        return rows.firstOrNull()?.toDto() ?: throw ApiException(404, null, "Jogo não encontrado: $slug")
+    }
+
+    suspend fun listVersions(gameId: String): List<GameVersionDto> {
+        ensureDataToken()
+        return dataApi.listVersionsForGame(
+            mapOf("game_id" to "eq.$gameId", "order" to "created_at.desc"),
+        ).map { it.toVersionDto() }
+    }
+
+    suspend fun listCategories(): List<CategoryDto> {
+        ensureDataToken()
+        return dataApi.listCategories(mapOf("order" to "sort_order.asc")).map { it.toDto() }
+    }
+
+    /* ═══════════════════ Downloads ═══════════════════ */
+
+    /**
+     * Regista a descarga (tabela game_downloads + contador do jogo) e
+     * adiciona à biblioteca do utilizador. Só com sessão iniciada —
+     * utilizadores anónimos podem descarregar sem registo.
+     */
+    suspend fun registerDownload(game: GameDto, version: GameVersionDto?) {
+        ensureAuthCookie()
+        if (ApiClient.sessionCookie.isNullOrBlank()) return // anónimo: sem registo
+        val uid = requireUserId()
+        ensureDataToken()
+        runCatching {
+            dataApi.registerDownload(RegisterDownloadBody(gameId = game.id, versionId = version?.id))
+        }
+        addToLibrary(uid, game.id, version?.id)
+    }
+
+    /* ═══════════════════ Biblioteca ═══════════════════ */
+
+    suspend fun listLibrary(): List<GameDto> {
+        ensureAuthCookie()
+        ensureDataToken()
+        val rows = dataApi.listLibrary(
+            mapOf(
+                "select" to "*,games(*,game_versions(*),game_categories(categories(*)))",
+                "order" to "created_at.desc",
+            ),
+        )
+        return rows.mapNotNull { it.games?.toDto() }
+    }
+
+    private suspend fun addToLibrary(userId: String, gameId: String, versionId: String?) {
+        runCatching {
+            dataApi.insertLibrary(
+                mapOf(
+                    "user_id" to userId,
+                    "game_id" to gameId,
+                    "game_version_id" to versionId.orEmpty(),
+                ).filterValues { it.isNotBlank() },
+            )
+        } // duplicado (já na biblioteca) ou falha de rede não bloqueiam o download
+    }
+
+    suspend fun removeFromLibrary(gameId: String): Result<Unit> = runCatching {
+        ensureAuthCookie()
+        ensureDataToken()
+        dataApi.deleteLibrary(mapOf("game_id" to "eq.$gameId"))
+        Unit
+    }
+
+    /* ═══════════════════ Favoritos ═══════════════════ */
+
+    suspend fun listFavorites(): List<GameDto> {
+        ensureAuthCookie()
+        ensureDataToken()
+        val rows = dataApi.listFavorites(
+            mapOf(
+                "select" to "*,games(*,game_versions(*),game_categories(categories(*)))",
+                "order" to "created_at.desc",
+            ),
+        )
+        return rows.mapNotNull { it.games?.toDto() }
+    }
+
+    suspend fun isFavorite(gameId: String): Boolean {
+        ensureAuthCookie()
+        if (ApiClient.sessionCookie.isNullOrBlank()) return false
+        val uid = sessionStore.current().userId ?: return false
+        ensureDataToken()
+        val rows = runCatching {
+            dataApi.listFavorites(mapOf("game_id" to "eq.$gameId", "user_id" to "eq.$uid", "select" to "id"))
+        }.getOrNull() ?: return false
+        return rows.isNotEmpty()
+    }
+
+    suspend fun addFavorite(gameId: String): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        ensureDataToken()
+        runCatching {
+            dataApi.insertFavorite(mapOf("user_id" to uid, "game_id" to gameId))
+        }
+        Unit
+    }
+
+    suspend fun removeFavorite(gameId: String): Result<Unit> = runCatching {
+        ensureAuthCookie()
+        ensureDataToken()
+        dataApi.deleteFavorite(mapOf("game_id" to "eq.$gameId"))
+        Unit
+    }
+
+    /* ═══════════════════ Reviews ═══════════════════ */
+
+    suspend fun listReviews(gameId: String): List<ReviewDto> {
+        ensureDataToken()
+        return dataApi.listReviews(
+            mapOf(
+                "game_id" to "eq.$gameId",
+                "select" to "*,profiles(display_name,avatar_url)",
+                "order" to "updated_at.desc",
+            ),
+        ).map { it.toDto() }
+    }
+
+    /** Cria ou atualiza a review do próprio utilizador para o jogo. */
+    suspend fun upsertReview(gameId: String, rating: Int, comment: String?): Result<ReviewDto> = runCatching {
+        val uid = requireUserId()
+        ensureDataToken()
+        val existing = dataApi.listReviews(
+            mapOf("game_id" to "eq.$gameId", "user_id" to "eq.$uid", "select" to "*"),
+        )
+        if (existing.isEmpty()) {
+            dataApi.insertReview(
+                UpsertReviewBody(gameId = gameId, userId = uid, rating = rating.coerceIn(1, 5), comment = comment),
+            )
+        } else {
+            dataApi.updateReview(
+                mapOf("id" to "eq.${existing.first().id}"),
+                UpsertReviewBody(gameId = gameId, userId = uid, rating = rating.coerceIn(1, 5), comment = comment),
+            )
+        }.toDto()
+    }
+
+    /* ═══════════════════ Administração (só role=admin) ═══════════════════ */
+
+    suspend fun createGame(
+        name: String,
+        slug: String,
+        description: String?,
+        shortDescription: String?,
+        iconUrl: String?,
+        screenshots: List<String>,
+        status: String,
+        developerId: String?,
+    ): Result<GameDto> = runCatching {
+        ensureAuthCookie()
+        ensureDataToken()
+        val row = dataApi.insertGame(
+            CreateGameBody(
+                name = name,
+                slug = slug,
+                description = description?.takeIf { it.isNotBlank() },
+                shortDescription = shortDescription?.takeIf { it.isNotBlank() },
+                iconUrl = iconUrl?.takeIf { it.isNotBlank() },
+                screenshots = screenshots.filter { it.isNotBlank() },
+                status = status,
+                developerId = developerId,
+            ),
+        )
+        row.toDto()
     }
 
     suspend fun updateGame(
         gameId: String,
         name: String?,
         description: String?,
-        category: String?,
+        shortDescription: String?,
+        iconUrl: String?,
         status: String?,
     ): Result<GameDto> = runCatching {
-        authenticatedApi().updateGame(
-            gameId,
-            UpdateGameBody(name = name, description = description, category = category, status = status),
-        ).data
+        ensureAuthCookie()
+        ensureDataToken()
+        dataApi.updateGame(
+            mapOf("id" to "eq.$gameId"),
+            UpdateGameBody(
+                name = name,
+                description = description,
+                shortDescription = shortDescription,
+                iconUrl = iconUrl,
+                status = status,
+            ),
+        ).toDto()
     }
 
-    /**
-     * Publica uma versão: envia o APK por multipart (streaming com progresso)
-     * para a API, que sobe para o GitHub Releases e registra tudo no Neon.
-     */
-    suspend fun publishVersion(
+    suspend fun setGameCategory(gameId: String, categoryId: String): Result<Unit> = runCatching {
+        ensureAuthCookie()
+        ensureDataToken()
+        dataApi.deleteGameCategory(mapOf("game_id" to "eq.$gameId"))
+        if (categoryId.isNotBlank()) {
+            dataApi.insertGameCategory(GameCategoryLinkBody(gameId = gameId, categoryId = categoryId))
+        }
+        Unit
+    }
+
+    suspend fun createVersion(
         gameId: String,
         version: String,
-        versionCode: Int?,
+        versionCode: Long?,
         releaseNotes: String?,
-        apk: File,
-        icon: File?,
-        screenshots: List<File>,
-        onProgress: (bytesSent: Long, totalBytes: Long) -> Unit = { _, _ -> },
-    ): Result<Pair<GameDto, GameVersionDto>> = runCatching {
-        val jwt = freshJwt() ?: error("not_authenticated")
+        apkUrl: String,
+    ): Result<GameVersionDto> = runCatching {
+        ensureAuthCookie()
+        ensureDataToken()
+        dataApi.insertVersion(
+            CreateVersionBody(
+                gameId = gameId,
+                version = version,
+                versionCode = versionCode,
+                releaseNotes = releaseNotes?.takeIf { it.isNotBlank() },
+                apkUrl = apkUrl.trim(),
+                releaseTag = "app-$version",
+            ),
+        ).toVersionDto()
+    }
 
-        val multipart = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("version", version)
-        versionCode?.let { multipart.addFormDataPart("version_code", it.toString()) }
-        releaseNotes?.takeIf { it.isNotBlank() }?.let { multipart.addFormDataPart("release_notes", it) }
-
-        multipart.addFormDataPart(
-            "apk",
-            apk.name,
-            ProgressRequestBody(apk, "application/vnd.android.package-archive".toMediaType(), onProgress),
-        )
-        icon?.let { multipart.addFormDataPart("icon", it.name, it.asRequestBody("image/png".toMediaType())) }
-        screenshots.forEachIndexed { index, shot ->
-            multipart.addFormDataPart(
-                "screenshots",
-                "screen-${index + 1}.png",
-                shot.asRequestBody("image/png".toMediaType()),
-            )
+    /** Estatísticas de download do jogo (visíveis só para o admin via RLS). */
+    suspend fun downloadStats(gameId: String): DownloadStatsLite {
+        ensureAuthCookie()
+        ensureDataToken()
+        fun q(desdeIso: String?) = buildMap {
+            put("game_id", "eq.$gameId")
+            put("select", "id")
+            put("limit", "100000")
+            if (desdeIso != null) put("created_at", "gte.$desdeIso")
         }
+        val total = dataApi.listDownloads(q(null)).size.toLong()
+        val last7 = dataApi.listDownloads(q(isoDaysAgo(7))).size.toLong()
+        val last30 = dataApi.listDownloads(q(isoDaysAgo(30))).size.toLong()
+        return DownloadStatsLite(total = total, last7Days = last7, last30Days = last30)
+    }
 
-        val request = Request.Builder()
-            .url(BuildConfig.API_BASE_URL.trimEnd('/') + "/api/games/$gameId/versions")
-            .header("Authorization", "Bearer $jwt")
-            .post(multipart.build())
-            .build()
+    /* ═══════════════════ Mapeamentos ═══════════════════ */
 
-        val http = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(600, TimeUnit.SECONDS)
-            .readTimeout(600, TimeUnit.SECONDS)
-            .build()
+    private fun GameRow.toDto(): GameDto {
+        val cats = gameCategories.mapNotNull { it.categories }
+        return GameDto(
+            id = id,
+            slug = slug,
+            name = name,
+            description = description,
+            shortDescription = shortDescription,
+            developer = developer,
+            developerId = developerId,
+            category = cats.firstOrNull()?.name ?: category,
+            categories = cats.map { it.slug },
+            iconUrl = iconUrl,
+            screenshots = screenshots,
+            version = version ?: gameVersions.maxByOrNull { it.createdAt ?: "" }?.version,
+            versionCode = versionCode,
+            downloads = downloads,
+            status = status.name.lowercase(),
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+        )
+    }
 
-        http.newCall(request).execute().use { response ->
-            val bodyStr = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                error("publish_failed (${response.code}): ${parseError(bodyStr)}")
-            }
-            val parsed = json.decodeFromString(
-                com.gstore.app.data.remote.PublishDataResponse.serializer(),
-                bodyStr,
+    private fun GameVersionRow.toVersionDto(): GameVersionDto = GameVersionDto(
+        id = id,
+        gameId = gameId,
+        version = version,
+        versionCode = versionCode,
+        releaseNotes = releaseNotes,
+        apkUrl = apkUrl,
+        apkFileName = apkFileName,
+        apkSizeBytes = apkSizeBytes,
+        releaseTag = releaseTag,
+        createdAt = createdAt,
+    )
+
+    private fun com.gstore.app.data.remote.CategoryRow.toDto(): CategoryDto = CategoryDto(
+        id = id,
+        slug = slug,
+        name = name,
+        description = description,
+        iconUrl = iconUrl,
+        sortOrder = sortOrder,
+        gamesCount = gamesCount,
+    )
+
+    private fun com.gstore.app.data.remote.ProfileRow.toDto(email: String?): ProfileDto = ProfileDto(
+        id = id,
+        authUserId = id,
+        email = email,
+        displayName = displayName,
+        avatarUrl = avatarUrl,
+        role = when (role) {
+            "admin" -> Role.ADMIN
+            "developer" -> Role.DEVELOPER
+            else -> Role.USER
+        },
+        createdAt = createdAt,
+    )
+
+    private fun com.gstore.app.data.remote.ReviewRow.toDto(): ReviewDto = ReviewDto(
+        id = id,
+        gameId = gameId,
+        userId = userId,
+        rating = rating,
+        comment = comment,
+        authorName = profiles?.displayName,
+        authorAvatar = profiles?.avatarUrl,
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+    )
+
+    /* ═══════════════════ Erros ═══════════════════ */
+
+    private fun checkConfig() {
+        val faltam = ConfigCheck.fromBuild()
+        if (faltam.isNotEmpty()) {
+            throw IllegalStateException(
+                "Neon não configurado: falta ${faltam.joinToString(", ")}. " +
+                    "Defina em android/gradle.properties (ou -PNEON_AUTH_URL=... no build).",
             )
-            parsed.data.game to parsed.data.version
         }
     }
 
-    private fun parseError(body: String): String =
-        runCatching {
-            val err = json.decodeFromString(com.gstore.app.data.remote.ErrorResponse.serializer(), body)
-            err.message ?: err.error
-        }.getOrDefault("erro desconhecido")
+    private fun parseAuthError(body: String?): AuthErrorBody? = body?.let {
+        runCatching { json.decodeFromString(AuthErrorBody.serializer(), it) }.getOrNull()
+    }
 
     companion object {
         @Volatile private var instance: GStoreRepository? = null
@@ -248,27 +627,88 @@ class GStoreRepository private constructor(
     }
 }
 
-/** RequestBody com progresso real de upload (streaming em blocos de 64 KB). */
-private class ProgressRequestBody(
-    private val file: File,
-    private val mediaType: MediaType,
-    private val onProgress: (Long, Long) -> Unit,
-) : RequestBody() {
-    override fun contentType(): MediaType? = mediaType
-    override fun contentLength(): Long = file.length()
+/* ═════ DTOs de UI (mantêm o formato que as telas já usam) ═════ */
 
-    override fun writeTo(sink: BufferedSink) {
-        val total = file.length()
-        var written = 0L
-        file.inputStream().use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                val read = input.read(buffer)
-                if (read <= 0) break
-                sink.write(buffer, 0, read)
-                written += read
-                onProgress(written, total)
-            }
-        }
-    }
+@kotlinx.serialization.Serializable
+data class GameDto(
+    val id: String,
+    val slug: String,
+    val name: String,
+    val description: String? = null,
+    @kotlinx.serialization.SerialName("short_description") val shortDescription: String? = null,
+    val developer: String? = null,
+    @kotlinx.serialization.SerialName("developer_id") val developerId: String? = null,
+    val category: String? = null,
+    val categories: List<String> = emptyList(),
+    @kotlinx.serialization.SerialName("icon_url") val iconUrl: String? = null,
+    val screenshots: List<String> = emptyList(),
+    val version: String? = null,
+    @kotlinx.serialization.SerialName("version_code") val versionCode: Long? = null,
+    val downloads: Long = 0,
+    val status: String = "published",
+    @kotlinx.serialization.SerialName("created_at") val createdAt: String? = null,
+    @kotlinx.serialization.SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class GameVersionDto(
+    val id: String,
+    @kotlinx.serialization.SerialName("game_id") val gameId: String,
+    val version: String,
+    @kotlinx.serialization.SerialName("version_code") val versionCode: Long? = null,
+    @kotlinx.serialization.SerialName("release_notes") val releaseNotes: String? = null,
+    @kotlinx.serialization.SerialName("apk_url") val apkUrl: String,
+    @kotlinx.serialization.SerialName("apk_file_name") val apkFileName: String? = null,
+    @kotlinx.serialization.SerialName("apk_size_bytes") val apkSizeBytes: Long? = null,
+    @kotlinx.serialization.SerialName("release_tag") val releaseTag: String? = null,
+    @kotlinx.serialization.SerialName("created_at") val createdAt: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class CategoryDto(
+    val id: String,
+    val slug: String,
+    val name: String,
+    val description: String? = null,
+    @kotlinx.serialization.SerialName("icon_url") val iconUrl: String? = null,
+    @kotlinx.serialization.SerialName("sort_order") val sortOrder: Int = 0,
+    @kotlinx.serialization.SerialName("games_count") val gamesCount: Long = 0,
+)
+
+@kotlinx.serialization.Serializable
+data class ProfileDto(
+    val id: String,
+    val authUserId: String,
+    val email: String? = null,
+    @kotlinx.serialization.SerialName("display_name") val displayName: String? = null,
+    @kotlinx.serialization.SerialName("avatar_url") val avatarUrl: String? = null,
+    val role: Role = Role.USER,
+    @kotlinx.serialization.SerialName("created_at") val createdAt: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class ReviewDto(
+    val id: String,
+    @kotlinx.serialization.SerialName("game_id") val gameId: String,
+    @kotlinx.serialization.SerialName("user_id") val userId: String,
+    val rating: Int,
+    val comment: String? = null,
+    val authorName: String? = null,
+    val authorAvatar: String? = null,
+    @kotlinx.serialization.SerialName("created_at") val createdAt: String? = null,
+    @kotlinx.serialization.SerialName("updated_at") val updatedAt: String? = null,
+)
+
+data class DownloadStatsLite(
+    val total: Long,
+    val last7Days: Long,
+    val last30Days: Long,
+)
+
+/* ═══════════════ Helpers de data (formato ISO do Postgres) ═══════════════ */
+
+internal fun isoDaysAgo(days: Long): String {
+    val t = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(days)
+    return java.time.format.DateTimeFormatter.ISO_INSTANT
+        .format(java.time.Instant.ofEpochMilli(t).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
 }

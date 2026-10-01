@@ -1,30 +1,35 @@
 package com.gstore.app.screens.developer
 
-import android.content.Context
-import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.gstore.app.data.remote.GameDto
-import com.gstore.app.data.remote.GameVersionDto
+import com.gstore.app.data.repo.CategoryDto
+import com.gstore.app.data.repo.DownloadStatsLite
+import com.gstore.app.data.repo.GameDto
+import com.gstore.app.data.repo.GameVersionDto
 import com.gstore.app.data.repo.GStoreRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import java.io.File
 
 sealed interface PublishState {
     data object Idle : PublishState
-    data class Uploading(val progress: Int) : PublishState
-    data object Processing : PublishState
-    data class Done(val gameId: String) : PublishState
+    data class Saving(val passo: String) : PublishState
+    data object Done : PublishState
     data class Error(val message: String) : PublishState
 }
 
+/**
+ * ViewModel da ÁREA DE ADMINISTRAÇÃO (só visível para role=admin;
+ * o servidor nega tudo a não-admins via RLS de qualquer forma).
+ */
 class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel() {
 
     private val _myGames = MutableStateFlow<List<GameDto>>(emptyList())
     val myGames: StateFlow<List<GameDto>> = _myGames
+
+    private val _categories = MutableStateFlow<List<CategoryDto>>(emptyList())
+    val categories: StateFlow<List<CategoryDto>> = _categories
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading
@@ -38,74 +43,82 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
     private val _stats = MutableStateFlow<DownloadStatsLite?>(null)
     val stats: StateFlow<DownloadStatsLite?> = _stats
 
+    /** Catálogo completo (admin vê rascunhos também). */
     fun loadMyGames() {
         _loading.value = true
         viewModelScope.launch {
             try {
-                // Lista jogos publicados (o endpoint "all" exige papel admin —
-                // aqui o dashboard mostra os jogos visíveis do developer).
-                _myGames.value = repository.listGames()
+                val (games, categories) = repository.fetchCatalog(includeDrafts = true)
+                _myGames.value = games
+                _categories.value = categories
             } catch (e: Exception) {
                 _myGames.value = emptyList()
+                _publishState.value = PublishState.Error(e.message ?: "Falha ao carregar jogos")
             } finally {
                 _loading.value = false
             }
         }
     }
 
+    /**
+     * Cria um jogo + categoria + primeira versão (APK já hospedado no
+     * GitHub Releases — o admin cola o link).
+     */
     fun publish(
-        context: Context,
         name: String,
+        slug: String,
         description: String,
-        category: String,
+        shortDescription: String,
+        categoryId: String,
+        iconUrl: String,
+        screenshots: List<String>,
+        status: String,
         version: String,
-        versionCode: Int?,
+        versionCode: Long?,
         releaseNotes: String,
-        apkUri: Uri?,
+        apkUrl: String,
     ) {
-        if (apkUri == null) {
-            _publishState.value = PublishState.Error("Selecione o arquivo APK.")
-            return
-        }
         viewModelScope.launch {
-            try {
-                val apk = copyToTemp(context, apkUri, "upload.apk")
-                    ?: run {
-                        _publishState.value = PublishState.Error("Não foi possível ler o APK selecionado.")
-                        return@launch
-                    }
-                _publishState.value = PublishState.Uploading(0)
+            _publishState.value = PublishState.Saving("A criar o jogo...")
+            val gameResult = repository.createGame(
+                name = name,
+                slug = slug,
+                description = description,
+                shortDescription = shortDescription,
+                iconUrl = iconUrl,
+                screenshots = screenshots,
+                status = status,
+                developerId = null,
+            )
+            val game = gameResult.getOrElse { e ->
+                _publishState.value = PublishState.Error(readable(e))
+                return@launch
+            }
 
-                val gameResult = repository.createGame(name, description, category)
-                val game = gameResult.getOrElse { e ->
+            if (categoryId.isNotBlank()) {
+                _publishState.value = PublishState.Saving("A associar a categoria...")
+                repository.setGameCategory(game.id, categoryId).onFailure { e ->
                     _publishState.value = PublishState.Error(readable(e))
-                    apk.delete()
                     return@launch
                 }
+            }
 
-                // Envia APK -> API -> GitHub Releases -> Neon
-                repository.publishVersion(
+            if (version.isNotBlank() && apkUrl.isNotBlank()) {
+                _publishState.value = PublishState.Saving("A registar a versão...")
+                repository.createVersion(
                     gameId = game.id,
                     version = version,
                     versionCode = versionCode,
                     releaseNotes = releaseNotes,
-                    apk = apk,
-                    icon = null,
-                    screenshots = emptyList(),
-                    onProgress = { sent, total ->
-                        val pct = if (total > 0) ((sent * 100) / total).toInt() else 0
-                        _publishState.value = PublishState.Uploading(pct.coerceIn(0, 99))
-                    },
-                ).onSuccess { (publishedGame, _) ->
-                    _publishState.value = PublishState.Done(publishedGame.id)
-                    loadMyGames()
-                }.onFailure { e ->
+                    apkUrl = apkUrl,
+                ).onFailure { e ->
                     _publishState.value = PublishState.Error(readable(e))
+                    return@launch
                 }
-                apk.delete()
-            } catch (e: Exception) {
-                _publishState.value = PublishState.Error(e.message ?: "Falha ao publicar")
             }
+
+            _publishState.value = PublishState.Done
+            loadMyGames()
         }
     }
 
@@ -113,32 +126,57 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
         viewModelScope.launch {
             try {
                 _versions.value = repository.listVersions(gameId)
-                _stats.value = repository.downloadStats(gameId).let { response ->
-                    DownloadStatsLite(
-                        counter = response.counter,
-                        total = response.stats.total,
-                        last7Days = response.stats.last7Days,
-                        last30Days = response.stats.last30Days,
-                    )
-                }
+                _stats.value = repository.downloadStats(gameId)
             } catch (e: Exception) {
                 _versions.value = emptyList()
+                _stats.value = null
             }
         }
     }
 
-    fun updateGame(gameId: String, name: String, description: String, category: String, onDone: () -> Unit) {
+    fun addVersion(
+        gameId: String,
+        version: String,
+        versionCode: Long?,
+        releaseNotes: String,
+        apkUrl: String,
+        onDone: (String?) -> Unit,
+    ) {
         viewModelScope.launch {
-            repository.updateGame(gameId, name, description, category, null)
-                .onSuccess { onDone() }
+            repository.createVersion(gameId, version, versionCode, releaseNotes, apkUrl)
+                .onSuccess { onDone(null); loadVersions(gameId) }
+                .onFailure { onDone(readable(it)) }
+        }
+    }
+
+    fun updateGame(
+        gameId: String,
+        name: String,
+        description: String,
+        shortDescription: String,
+        iconUrl: String,
+        status: String,
+        categoryId: String,
+        onDone: (String?) -> Unit,
+    ) {
+        viewModelScope.launch {
+            repository.updateGame(gameId, name, description, shortDescription, iconUrl, status)
+                .onSuccess { jogo ->
+                    repository.setGameCategory(jogo.id, categoryId).onFailure { e ->
+                        onDone(readable(e)); return@launch
+                    }
+                    onDone(null)
+                    loadMyGames()
+                }
+                .onFailure { onDone(readable(it)) }
         }
     }
 
     private fun readable(t: Throwable): String = when {
         t.message?.contains("not_authenticated") == true -> "Sessão expirada — entre novamente."
-        t.message?.contains("forbidden") == true -> "Sua conta precisa do papel DEVELOPER (disponível no Perfil)."
-        t.message?.contains("Appwrite") == true || t.message?.contains("configurado") == true -> t.message ?: "Configuração ausente"
-        else -> "Falha na publicação: ${t.message ?: "erro desconhecido"}"
+        t.message?.contains("42501") == true || t.message?.contains("permission denied", true) == true ->
+            "Apenas o administrador pode alterar o catálogo (RLS bloqueou o pedido)."
+        else -> "Falha: ${t.message ?: "erro desconhecido"}"
     }
 
     companion object {
@@ -150,22 +188,11 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
     }
 }
 
-/** Estatísticas simplificadas para exibição no dashboard. */
-data class DownloadStatsLite(
-    val counter: Long,
-    val total: Long,
-    val last7Days: Long,
-    val last30Days: Long,
-)
-
-private fun copyToTemp(context: Context, uri: Uri, name: String): File? {
-    return try {
-        val out = File(context.cacheDir, name)
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            out.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
-        } ?: return null
-        out
-    } catch (e: Exception) {
-        null
-    }
-}
+/** Gera um slug a partir do nome (para o formulário de publicação). */
+fun slugify(name: String): String = name
+    .lowercase()
+    .trim()
+    .replace(Regex("[^a-z0-9\\s-]"), "")
+    .replace(Regex("\\s+"), "-")
+    .replace(Regex("-+"), "-")
+    .trim('-')

@@ -1,162 +1,285 @@
 package com.gstore.app.data.remote
 
-import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import com.gstore.app.BuildConfig
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerialName
+import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
+import okhttp3.Response
+import retrofit2.Response as RetrofitResponse
 import retrofit2.Retrofit
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Headers
+import retrofit2.http.PATCH
 import retrofit2.http.POST
-import retrofit2.http.PUT
-import retrofit2.http.Path
+import retrofit2.http.QueryMap
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
+import android.util.Base64
 
 /**
- * Cliente HTTP da G Store.
+ * Cliente HTTP da G Store para o Neon.
  *
- * Segurança: o app NUNCA recebe o GitHub token nem a API key do Appwrite —
- * tudo isso fica no backend. Aqui só configuramos a URL pública da API.
+ * Dois serviços, ambos PÚBLICOS (sem chaves secretas):
+ *  - NeonAuthApi — login/registo/logout/sessão (Better Auth hospedado)
+ *  - NeonDataApi — catálogo, biblioteca, reviews… (PostgREST sobre o
+ *    Postgres, protegido por RLS)
+ *
+ * Autorização: a Data API exige um JWT em TODOS os pedidos.
+ *  - Utilizador com sessão → JWT de 15 min (header `set-auth-jwt`)
+ *  - Sem sessão → token anónimo público de 1 h (`/token/anonymous`)
+ *
+ * Os interceptores leem as variáveis voláteis abaixo, mantidas atualizadas
+ * pelo GStoreRepository (que as refresca antes de expirar). Desta forma
+ * nenhum interceptor precisa de bloquear uma thread à espera de I/O.
  */
 object ApiClient {
+
+    /** Cookie de sessão atual (token.assinatura) — atualizado no login/logout. */
+    @Volatile var sessionCookie: String? = null
+
+    /** JWT corrente para a Data API (do utilizador ou anónimo). */
+    @Volatile var dataToken: String? = null
 
     val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
         isLenient = true
+        explicitNulls = false
     }
 
-    private val okHttp: OkHttpClient by lazy {
-        val builder = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(300, TimeUnit.SECONDS) // upload de APK pode demorar
-        if (BuildConfig.DEBUG) {
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BASIC
-            }
-            builder.addInterceptor(logging)
-        }
-        builder.build()
-    }
+    /** Origin de confiança registada no Neon Auth (ver ConfigCheck). */
+    private val origin: String get() = BuildConfig.NEON_AUTH_ORIGIN
 
-    /** Interceptor que anexa o JWT do Appwrite às chamadas autenticadas. */
-    fun authenticatedClient(jwtProvider: () -> String?): OkHttpClient =
-        okHttp.newBuilder()
+    /* ---------------------- OkHttp ---------------------- */
+
+    private fun baseClient(): OkHttpClient.Builder = OkHttpClient.Builder()
+        // Rede móvel lenta: limites generosos + reenvio automático de
+        // ligações interrompidas (retryOnConnectionFailure já vem ligado).
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+
+    /* ---------------------- Neon Auth API ---------------------- */
+
+    private val authOkHttp: OkHttpClient by lazy {
+        baseClient()
             .addInterceptor { chain ->
-                val jwt = jwtProvider()
-                val request = if (jwt.isNullOrBlank()) {
+                val req = chain.request().newBuilder()
+                    .header("Origin", origin)
+                    .header("Accept", "application/json")
+                    .build()
+                chain.proceed(req)
+            }
+            .addInterceptor { chain ->
+                val cookie = sessionCookie
+                val req = if (cookie.isNullOrBlank()) {
                     chain.request()
                 } else {
                     chain.request().newBuilder()
-                        .header("Authorization", "Bearer $jwt")
+                        .header("Cookie", cookie)
                         .build()
                 }
-                chain.proceed(request)
+                chain.proceed(req)
             }
             .build()
-
-    val api: GStoreApi by lazy {
-        Retrofit.Builder()
-            .baseUrl(BuildConfig.API_BASE_URL.trimEnd('/') + "/")
-            .client(okHttp)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
-            .create(GStoreApi::class.java)
     }
 
-    /** API autenticada (usada por developer/admin e perfil). */
-    fun authenticatedApi(jwtProvider: () -> String?): GStoreApi =
+    private val authRetrofit: Retrofit by lazy {
         Retrofit.Builder()
-            .baseUrl(BuildConfig.API_BASE_URL.trimEnd('/') + "/")
-            .client(authenticatedClient(jwtProvider))
+            .baseUrl(BuildConfig.NEON_AUTH_URL.trimEnd('/') + "/")
+            .client(authOkHttp)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
-            .create(GStoreApi::class.java)
+    }
+
+    val authApi: NeonAuthApi by lazy { authRetrofit.create(NeonAuthApi::class.java) }
+
+    /* ---------------------- Neon Data API ---------------------- */
+
+    private val dataOkHttp: OkHttpClient by lazy {
+        baseClient()
+            .addInterceptor { chain ->
+                val token = dataToken
+                val req = if (token.isNullOrBlank()) {
+                    chain.request()
+                } else {
+                    chain.request().newBuilder()
+                        .header("Authorization", "Bearer $token")
+                        .build()
+                }
+                chain.proceed(req)
+            }
+            .build()
+    }
+
+    private val dataRetrofit: Retrofit by lazy {
+        Retrofit.Builder()
+            .baseUrl(BuildConfig.NEON_DATA_API_URL.trimEnd('/') + "/")
+            .client(dataOkHttp)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+    }
+
+    val dataApi: NeonDataApi by lazy { dataRetrofit.create(NeonDataApi::class.java) }
+
+    /* ---------------------- Utilitários ---------------------- */
+
+    /** Extrai o valor do cookie `__Secure-neon-auth.session_token` da resposta. */
+    fun extractSessionCookie(response: RetrofitResponse<*>): String? {
+        val setCookie = response.headers().values("Set-Cookie")
+        for (header in setCookie) {
+            val name = "__Secure-neon-auth.session_token="
+            val idx = header.indexOf(name)
+            if (idx >= 0) {
+                val rest = header.substring(idx + name.length)
+                return rest.substringBefore(';').trim().ifBlank { null }
+            }
+        }
+        return null
+    }
+
+    /** Lê o claim `exp` de um JWT (payload base64url) sem validar assinatura. */
+    fun jwtExpiry(token: String): Long? = runCatching {
+        val parts = token.split(".")
+        if (parts.size < 2) return@runCatching null
+        val payload = String(Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
+        val obj = json.parseToJsonElement(payload) as? kotlinx.serialization.json.JsonObject
+            ?: return@runCatching null
+        (obj["exp"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull()
+    }.getOrNull()
 }
 
-interface GStoreApi {
+/* ════════════════════ Interfaces Retrofit ════════════════════ */
 
-    @GET("api/health")
-    suspend fun health(): retrofit2.Response<Map<String, kotlinx.serialization.json.JsonElement>>
+interface NeonAuthApi {
 
-    @GET("api/games")
-    suspend fun listGames(
-        @Query("q") search: String? = null,
-        @Query("category") category: String? = null,
-        @Query("sort") sort: String? = null,
-        @Query("limit") limit: Int = 50,
-        @Query("offset") offset: Int = 0,
-    ): GameListResponse
+    @POST("sign-up/email")
+    suspend fun signUp(@Body body: SignUpBody): RetrofitResponse<AuthResponse>
 
-    @GET("api/games/{slug}")
-    suspend fun getGame(@Path("slug") slug: String): GameDataResponse
+    @POST("sign-in/email")
+    suspend fun signIn(@Body body: SignInBody): RetrofitResponse<AuthResponse>
 
-    @GET("api/games/{id}/versions")
-    suspend fun listVersions(@Path("id") gameId: String): VersionListResponse
+    @POST("sign-out")
+    suspend fun signOut(): RetrofitResponse<Unit>
 
-    @GET("api/games/{id}/downloads")
-    suspend fun downloadStats(@Path("id") gameId: String): DownloadStatsResponse
+    /** Devolve a sessão atual; o JWT vem no header `set-auth-jwt`. */
+    @GET("get-session")
+    suspend fun getSession(): RetrofitResponse<SessionResponse?>
 
-    @GET("api/categories")
-    suspend fun listCategories(): CategoryListResponse
+    /** Token público para ler o catálogo sem login (role anonymous, 1 h). */
+    @GET("token/anonymous")
+    suspend fun anonymousToken(): AnonymousTokenResponse
 
-    @GET("api/categories/{slug}")
-    suspend fun getCategory(@Path("slug") slug: String): CategoryDetailResponse
-
-    /* ---------- Autenticadas (Bearer JWT via OkHttp interceptor) ---------- */
-
-    @POST("api/auth/sync")
-    suspend fun syncSession(): ProfileDataResponse
-
-    @GET("api/profile")
-    suspend fun profile(): ProfileDataResponse
-
-    @POST("api/profile/become-developer")
-    suspend fun becomeDeveloper(): ProfileDataResponse
-
-    @PUT("api/profile")
-    suspend fun updateProfile(@Body body: UpdateProfileBody): ProfileDataResponse
-
-    @POST("api/games")
-    suspend fun createGame(@Body body: CreateGameBody): GameDataResponse
-
-    @PUT("api/games/{id}")
-    suspend fun updateGame(@Path("id") gameId: String, @Body body: UpdateGameBody): GameDataResponse
-
-    @GET("api/games")
-    suspend fun myGames(
-        @Query("all") all: Int = 1,
-        @Query("limit") limit: Int = 100,
-    ): GameListResponse
+    @POST("update-user")
+    suspend fun updateUser(@Body body: UpdateUserBody): RetrofitResponse<AuthUser>
 }
 
-@Serializable
-data class CreateGameBody(
-    val name: String,
-    val description: String? = null,
-    @SerialName("short_description") val shortDescription: String? = null,
-    val category: String? = null,
-    val status: String = "draft",
-)
+interface NeonDataApi {
 
-@Serializable
-data class UpdateGameBody(
-    val name: String? = null,
-    val description: String? = null,
-    @SerialName("short_description") val shortDescription: String? = null,
-    val category: String? = null,
-    val status: String? = null,
-    @SerialName("icon_url") val iconUrl: String? = null,
-)
+    /* ---------- Catálogo (leitura pública) ---------- */
 
-@Serializable
-data class UpdateProfileBody(
-    @SerialName("display_name") val displayName: String? = null,
-    @SerialName("avatar_url") val avatarUrl: String? = null,
-)
+    @Headers("Prefer: return=representation")
+    @GET("games")
+    suspend fun listGames(@QueryMap query: Map<String, String>): List<GameRow>
+
+    @Headers("Prefer: return=representation")
+    @GET("games")
+    suspend fun getGame(@QueryMap query: Map<String, String>): List<GameRow>
+
+    @GET("v_categories")
+    suspend fun listCategories(@QueryMap query: Map<String, String> = emptyMap()): List<CategoryRow>
+
+    @GET("game_versions")
+    suspend fun listVersionsForGame(@QueryMap query: Map<String, String>): List<GameVersionRow>
+
+    /* ---------- Perfis ---------- */
+
+    @GET("profiles")
+    suspend fun listProfiles(@QueryMap query: Map<String, String>): List<ProfileRow>
+
+    @Headers("Prefer: return=representation")
+    @POST("profiles")
+    suspend fun insertProfile(@Body body: UpsertProfileBody): ProfileRow
+
+    @Headers("Prefer: return=representation")
+    @PATCH("profiles")
+    suspend fun updateProfileRow(@QueryMap query: Map<String, String>, @Body body: UpdateProfileRowBody): ProfileRow
+
+    /* ---------- Biblioteca ---------- */
+
+    @Headers("Prefer: return=representation")
+    @GET("library")
+    suspend fun listLibrary(@QueryMap query: Map<String, String>): List<LibraryRow>
+
+    @Headers("Prefer: return=representation, resolution=merge-duplicates")
+    @POST("library")
+    suspend fun insertLibrary(@Body body: Map<String, String>): LibraryRow
+
+    @DELETE("library")
+    suspend fun deleteLibrary(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
+
+    /* ---------- Favoritos ---------- */
+
+    @Headers("Prefer: return=representation")
+    @GET("favorites")
+    suspend fun listFavorites(@QueryMap query: Map<String, String>): List<FavoriteRow>
+
+    @Headers("Prefer: return=representation, resolution=merge-duplicates")
+    @POST("favorites")
+    suspend fun insertFavorite(@Body body: Map<String, String>): FavoriteRow
+
+    @DELETE("favorites")
+    suspend fun deleteFavorite(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
+
+    /* ---------- Reviews ---------- */
+
+    @Headers("Prefer: return=representation")
+    @GET("reviews")
+    suspend fun listReviews(@QueryMap query: Map<String, String>): List<ReviewRow>
+
+    @Headers("Prefer: return=representation")
+    @POST("reviews")
+    suspend fun insertReview(@Body body: UpsertReviewBody): ReviewRow
+
+    @Headers("Prefer: return=representation")
+    @PATCH("reviews")
+    suspend fun updateReview(@QueryMap query: Map<String, String>, @Body body: UpsertReviewBody): ReviewRow
+
+    @DELETE("reviews")
+    suspend fun deleteReview(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
+
+    /* ---------- RPC ---------- */
+
+    @POST("rpc/register_download")
+    suspend fun registerDownload(@Body body: RegisterDownloadBody): RetrofitResponse<Unit>
+
+    /* ---------- Admin (games/versões) ---------- */
+
+    @Headers("Prefer: return=representation")
+    @POST("games")
+    suspend fun insertGame(@Body body: CreateGameBody): GameRow
+
+    @Headers("Prefer: return=representation")
+    @PATCH("games")
+    suspend fun updateGame(@QueryMap query: Map<String, String>, @Body body: UpdateGameBody): GameRow
+
+    @Headers("Prefer: return=representation")
+    @POST("game_versions")
+    suspend fun insertVersion(@Body body: CreateVersionBody): GameVersionRow
+
+    @POST("game_categories")
+    suspend fun insertGameCategory(@Body body: GameCategoryLinkBody): GameCategoryLinkBody
+
+    @DELETE("game_categories")
+    suspend fun deleteGameCategory(@QueryMap query: Map<String, String>): RetrofitResponse<Unit>
+
+    @GET("game_downloads")
+    suspend fun listDownloads(@QueryMap query: Map<String, String>): List<Map<String, String?>>
+}

@@ -1,16 +1,16 @@
 package com.gstore.app
 
 /**
- * Verificação da configuração pública do Appwrite no arranque do app.
+ * Verificação da configuração pública do Neon no arranque do app.
  *
- * O app Android só conhece dois valores PÚBLICOS do Appwrite:
- *  - APPWRITE_ENDPOINT  (ex.: https://fra.cloud.appwrite.io/v1)
- *  - APPWRITE_PROJECT_ID (ID do projeto no Appwrite)
+ * O app Android só conhece três valores PÚBLICOS:
+ *  - NEON_AUTH_URL     (ex.: https://ep-xxx.neonauth.<região>.aws.neon.tech/neondb/auth)
+ *  - NEON_DATA_API_URL (ex.: https://ep-xxx.apirest.<região>.aws.neon.tech/neondb/rest/v1)
+ *  - NEON_AUTH_ORIGIN  (origem de confiança registrada no Neon Auth)
  *
- * A APPWRITE_API_KEY é SEGREDO e fica SOMENTE no backend — se fosse
- * embutida no APK, qualquer pessoa poderia extraí-la e administrar
- * o projeto. O app autentica-se com o SDK oficial (e-mail/senha/JWT),
- * nunca com a API key.
+ * Não existe nenhuma chave secreta no app: toda a autorização é feita por
+ * RLS no Postgres — cada token (anónimo ou autenticado) só acede ao que as
+ * políticas permitem, mesmo que alguém extraia os endpoints do APK.
  */
 object ConfigCheck {
 
@@ -18,18 +18,21 @@ object ConfigCheck {
      * Devolve a lista de valores em falta/inválidos.
      * Lista vazia = configuração OK.
      */
-    fun missingValues(endpoint: String, projectId: String): List<String> {
+    fun missingValues(authUrl: String, dataApiUrl: String, origin: String): List<String> {
         val missing = mutableListOf<String>()
-        if (endpoint.isBlank() || !endpoint.startsWith("https://")) {
-            missing += "APPWRITE_ENDPOINT"
+        if (authUrl.isBlank() || !authUrl.startsWith("https://")) {
+            missing += "NEON_AUTH_URL"
         }
-        if (projectId.isBlank()) {
-            missing += "APPWRITE_PROJECT_ID"
+        if (dataApiUrl.isBlank() || !dataApiUrl.startsWith("https://")) {
+            missing += "NEON_DATA_API_URL"
+        }
+        if (origin.isBlank() || !origin.startsWith("https://")) {
+            missing += "NEON_AUTH_ORIGIN"
         }
         return missing
     }
 
     /** Versão que lê os valores gerados no build (BuildConfig). */
     fun fromBuild(): List<String> =
-        missingValues(BuildConfig.APPWRITE_ENDPOINT, BuildConfig.APPWRITE_PROJECT_ID)
+        missingValues(BuildConfig.NEON_AUTH_URL, BuildConfig.NEON_DATA_API_URL, BuildConfig.NEON_AUTH_ORIGIN)
 }

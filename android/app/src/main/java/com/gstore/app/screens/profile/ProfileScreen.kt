@@ -1,6 +1,7 @@
 package com.gstore.app.screens.profile
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,15 +15,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,10 +36,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.gstore.app.data.remote.Role
 
-/** Tela de Perfil: dados da conta, papel (role) e atalho ao dashboard. */
+/** Tela de Perfil: avatar, nome, e-mail, papel (role) e logout. */
 @Composable
 fun ProfileScreen(
     viewModel: ProfileViewModel,
@@ -43,10 +52,12 @@ fun ProfileScreen(
     val profile by viewModel.profile.collectAsState()
     val loggedOut by viewModel.loggedOut.collectAsState()
     val busy by viewModel.busy.collectAsState()
-    var renaming by remember { mutableStateOf(false) }
+    val renameError by viewModel.renameError.collectAsState()
+    var showRename by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
 
-    androidx.compose.runtime.LaunchedEffect(loggedOut) {
+    LaunchedEffect(Unit) { viewModel.refresh() }
+    LaunchedEffect(loggedOut) {
         if (loggedOut) onOpenLogin()
     }
 
@@ -59,22 +70,33 @@ fun ProfileScreen(
         Spacer(Modifier.height(24.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.foundation.layout.Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shape = CircleShape,
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    (profile?.displayName ?: profile?.email ?: "G").take(1).uppercase(),
-                    style = MaterialTheme.typography.headlineMedium,
+            if (profile?.avatarUrl != null) {
+                AsyncImage(
+                    model = profile?.avatarUrl,
+                    contentDescription = "Avatar",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape),
                 )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        (profile?.displayName ?: profile?.email ?: "G").take(1).uppercase(),
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+                }
             }
             Spacer(Modifier.width(16.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     profile?.displayName ?: "Visitante",
                     style = MaterialTheme.typography.titleLarge,
@@ -84,6 +106,14 @@ fun ProfileScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (profile != null) {
+                androidx.compose.material3.IconButton(onClick = {
+                    newName = profile?.displayName ?: ""
+                    showRename = true
+                }) {
+                    Icon(Icons.Filled.Edit, contentDescription = "Renomear")
+                }
             }
         }
 
@@ -98,26 +128,16 @@ fun ProfileScreen(
                             Role.ADMIN -> "Administrador"
                             Role.DEVELOPER -> "Desenvolvedor"
                             Role.USER -> "Usuário"
+                            else -> "Usuário"
                         },
                         style = MaterialTheme.typography.titleMedium,
                     )
-                    if (profile!!.role == Role.USER) {
-                        Spacer(Modifier.height(12.dp))
-                        Button(
-                            onClick = { viewModel.becomeDeveloper() },
-                            enabled = !busy,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            if (busy) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            else Text("Quero publicar jogos (virar developer)")
-                        }
-                    }
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-            if (profile!!.role != Role.USER) {
+            // Área de administração — só para o administrador.
+            if (profile!!.role == Role.ADMIN) {
+                Spacer(Modifier.height(16.dp))
                 OutlinedButton(
                     onClick = onOpenDeveloperDashboard,
                     shape = RoundedCornerShape(12.dp),
@@ -125,7 +145,7 @@ fun ProfileScreen(
                 ) {
                     Icon(Icons.Filled.Storefront, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Developer Dashboard")
+                    Text("Área de administração")
                 }
                 Spacer(Modifier.height(10.dp))
             }
@@ -138,7 +158,7 @@ fun ProfileScreen(
             ) {
                 Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Sair da conta")
+                Text("Terminar sessão")
             }
         } else {
             Button(
@@ -149,5 +169,41 @@ fun ProfileScreen(
                 Text("Entrar / Criar conta")
             }
         }
+    }
+
+    if (showRename) {
+        AlertDialog(
+            onDismissRequest = { showRename = false },
+            title = { Text("Alterar nome de exibição") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("Nome") },
+                        singleLine = true,
+                    )
+                    renameError?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.rename(newName)
+                        showRename = false
+                    },
+                    enabled = !busy && newName.isNotBlank(),
+                ) {
+                    if (busy) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    else Text("Salvar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRename = false }) { Text("Cancelar") }
+            },
+        )
     }
 }

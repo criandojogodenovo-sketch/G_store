@@ -31,7 +31,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.gstore.app.data.remote.GameDto
+import com.gstore.app.data.repo.GameDto
 import com.gstore.app.data.repo.DownloadRepository
 import com.gstore.app.screens.ConfigErrorScreen
 import com.gstore.app.screens.auth.AuthViewModel
@@ -64,8 +64,8 @@ class MainActivity : ComponentActivity() {
         val app = application as GStoreApp
         setContent {
             GStoreTheme {
-                // Erro CLARO no arranque se a configuração pública do
-                // Appwrite estiver em falta (endpoint/project id).
+                // Erro CLARO no arranque se a configuração pública do Neon
+                // estiver em falta (Auth/Data API URLs).
                 val missingConfig = remember { ConfigCheck.fromBuild() }
                 if (missingConfig.isNotEmpty()) {
                     ConfigErrorScreen(missingConfig)
@@ -186,7 +186,11 @@ fun GStoreNavHost(app: GStoreApp) {
             }
             composable("library") {
                 val vm: LibraryViewModel = viewModel(factory = LibraryViewModel.factory(app.repository))
-                LibraryScreen(viewModel = vm, appContext = context)
+                LibraryScreen(
+                    viewModel = vm,
+                    appContext = context,
+                    onOpenGame = { navController.navigate("game/${it.slug}") },
+                )
             }
             composable("login") {
                 val vm: AuthViewModel = viewModel(factory = AuthViewModel.factory(app.repository))
