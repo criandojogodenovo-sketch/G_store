@@ -7,7 +7,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.gstore.app.data.remote.GameDto
 import com.gstore.app.data.remote.GameVersionDto
-import com.gstore.app.data.repo.DownloadStatsLite
 import com.gstore.app.data.repo.GStoreRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -43,8 +42,9 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
         _loading.value = true
         viewModelScope.launch {
             try {
-                // Endpoint "all=1" requer developer; erros simplesmente esvaziam a lista.
-                _myGames.value = repository.listGames(limit = 100)
+                // Lista jogos publicados (o endpoint "all" exige papel admin —
+                // aqui o dashboard mostra os jogos visíveis do developer).
+                _myGames.value = repository.listGames()
             } catch (e: Exception) {
                 _myGames.value = emptyList()
             } finally {
@@ -113,7 +113,14 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
         viewModelScope.launch {
             try {
                 _versions.value = repository.listVersions(gameId)
-                _stats.value = repository.downloadStats(gameId)
+                _stats.value = repository.downloadStats(gameId).let { response ->
+                    DownloadStatsLite(
+                        counter = response.counter,
+                        total = response.stats.total,
+                        last7Days = response.stats.last7Days,
+                        last30Days = response.stats.last30Days,
+                    )
+                }
             } catch (e: Exception) {
                 _versions.value = emptyList()
             }
@@ -151,12 +158,14 @@ data class DownloadStatsLite(
     val last30Days: Long,
 )
 
-private fun copyToTemp(context: Context, uri: Uri, name: String): File? = try {
-    val out = File(context.cacheDir, name)
-    context.contentResolver.openInputStream(uri)?.use { input ->
-        out.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
-    } ?: return null
-    out
-} catch (e: Exception) {
-    null
+private fun copyToTemp(context: Context, uri: Uri, name: String): File? {
+    return try {
+        val out = File(context.cacheDir, name)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            out.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+        } ?: return null
+        out
+    } catch (e: Exception) {
+        null
+    }
 }

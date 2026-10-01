@@ -23,6 +23,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okio.BufferedSink
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -122,13 +123,18 @@ class GStoreRepository private constructor(
 
     private val publicApi: GStoreApi get() = ApiClient.api
 
-    private fun authenticatedApi(): GStoreApi {
+    private suspend fun authenticatedApi(): GStoreApi {
         val session = sessionStore.current()
         return ApiClient.authenticatedApi { session.jwt }
     }
 
-    suspend fun listGames(search: String? = null, category: String? = null, sort: String? = null): List<GameDto> =
-        publicApi.listGames(search = search, category = category, sort = sort).games
+    suspend fun listGames(
+        search: String? = null,
+        category: String? = null,
+        sort: String? = null,
+        limit: Int = 50,
+    ): List<GameDto> =
+        publicApi.listGames(search = search, category = category, sort = sort, limit = limit).games
 
     suspend fun getGame(slug: String): GameDto = publicApi.getGame(slug).data
 

@@ -31,6 +31,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.gstore.app.data.remote.GameDto
 import com.gstore.app.data.repo.DownloadRepository
 import com.gstore.app.screens.auth.AuthViewModel
 import com.gstore.app.screens.auth.LoginScreen

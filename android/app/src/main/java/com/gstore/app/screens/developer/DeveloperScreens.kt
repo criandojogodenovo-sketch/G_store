@@ -142,7 +142,7 @@ fun PublishGameScreen(
                     apkUri = apkUri,
                 )
             },
-            enabled = apkUri != null && name.isNotBlank() && publishState !is PublishState.Busy,
+            enabled = apkUri != null && name.isNotBlank() && publishState !is PublishState.Uploading && publishState !is PublishState.Processing,
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth().height(54.dp),
         ) {

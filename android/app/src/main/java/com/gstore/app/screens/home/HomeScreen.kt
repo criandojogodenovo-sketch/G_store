@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.gstore.app.data.remote.GameDto
 import com.gstore.app.ui.components.ErrorState
 import com.gstore.app.ui.components.FeaturedGameCard
 import com.gstore.app.ui.components.FeaturedSkeleton
