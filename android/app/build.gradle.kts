@@ -55,7 +55,10 @@ android {
                     destino.writeBytes(decoded)
                     destino
                 }
-            val keystoreFile = env["KEYSTORE_FILE"]?.takeIf { it.isNotBlank() } ?: keystoreFromB64
+            val keystoreFile: File? = env["KEYSTORE_FILE"]
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::File)
+                ?: keystoreFromB64
             val envStorePassword = env["KEYSTORE_PASSWORD"]?.takeIf { it.isNotBlank() }
             val envKeyAlias = env["KEY_ALIAS"]?.takeIf { it.isNotBlank() }
             val envKeyPassword = env["KEY_PASSWORD"]?.takeIf { it.isNotBlank() }
