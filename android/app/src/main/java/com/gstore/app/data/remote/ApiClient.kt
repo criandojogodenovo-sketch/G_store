@@ -167,7 +167,7 @@ interface NeonAuthApi {
     suspend fun signIn(@Body body: SignInBody): RetrofitResponse<AuthResponse>
 
     @POST("sign-out")
-    suspend fun signOut(): RetrofitResponse<Unit>
+    suspend fun signOut(@Body body: EmptyBody = EmptyBody()): RetrofitResponse<EmptyBody>
 
     /** Devolve a sessão atual; o JWT vem no header `set-auth-jwt`. */
     @GET("get-session")

@@ -43,6 +43,10 @@ data class AuthResponse(
     val redirect: Boolean? = null,
 )
 
+/** Corpo vazio para endpoints que exigem JSON (ex.: sign-out). */
+@Serializable
+data class EmptyBody(val success: Boolean? = null)
+
 @Serializable
 data class AuthSession(
     val id: String? = null,
