@@ -1,6 +1,6 @@
 # Relatório Técnico — Base completa do G Store
 
-**Commit:** `9a50ec8` (push para `main`) • **Data:** 2026-10-01 • **Testes: 25/25 passando**
+**Commits finais:** `ee8afe0` (código) • `05f8c82` (relatório) • CI: 3/3 jobs SUCCESS • **Data:** 2026-10-01 • **Testes: 25/25 passando**
 
 ---
 
