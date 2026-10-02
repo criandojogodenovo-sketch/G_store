@@ -46,6 +46,7 @@ fun SearchScreen(
     val sort by viewModel.sort.collectAsState()
     val category by viewModel.category.collectAsState()
     val categoryLabel by viewModel.categoryLabel.collectAsState()
+    val typeFilter by viewModel.typeFilter.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -60,7 +61,7 @@ fun SearchScreen(
             OutlinedTextField(
                 value = query,
                 onValueChange = viewModel::onQueryChange,
-                placeholder = { Text("Buscar jogos...") },
+                placeholder = { Text("Buscar apps e jogos...") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
@@ -92,6 +93,22 @@ fun SearchScreen(
             }
         }
 
+        // Filtro Tudo / Apps / Jogos (a loja tem os dois tipos)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            com.gstore.app.data.repo.CatalogTypeFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = typeFilter == f,
+                    onClick = { viewModel.setTypeFilter(f) },
+                    label = { Text(f.rotulo) },
+                )
+            }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -109,8 +126,8 @@ fun SearchScreen(
 
         when (val s = state) {
             is SearchUiState.Idle -> EmptyState(
-                title = "O que você quer jogar?",
-                subtitle = "Digite o nome de um jogo, categoria ou desenvolvedor.",
+                title = "O que você procura hoje?",
+                subtitle = "Busque apps e jogos por nome, categoria ou desenvolvedor.",
             )
             is SearchUiState.Loading -> LazyColumn {
                 items(4) { GameCardSkeleton(modifier = Modifier.fillMaxWidth()) }

@@ -56,7 +56,7 @@ fun LoginScreen(
         Text("Bem-vindo de volta", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Entre para baixar seus jogos e publicar os seus.",
+            "Entre para baixar seus apps e jogos e publicar os seus.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -138,7 +138,7 @@ fun RegisterScreen(
         Text("Criar conta", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Jogue, baixe e publique jogos na G Store.",
+            "Jogue, baixe e publique apps e jogos na G Store.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

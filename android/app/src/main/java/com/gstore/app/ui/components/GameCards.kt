@@ -76,10 +76,10 @@ fun FeaturedGameCard(game: GameDto, onClick: () -> Unit, modifier: Modifier = Mo
                 )
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    MetaChip(game.category ?: "Jogo")
+                    MetaChip(game.category ?: if (game.type == "app") "App" else "Jogo")
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "${formatDownloads(game.downloads)} downloads",
+                        if (game.downloads == 1L) "1 download" else "${formatDownloads(game.downloads)} downloads",
                         style = MaterialTheme.typography.labelMedium,
                         color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f),
                     )

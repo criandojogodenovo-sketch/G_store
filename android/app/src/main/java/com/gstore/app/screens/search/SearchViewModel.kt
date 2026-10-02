@@ -2,6 +2,7 @@ package com.gstore.app.screens.search
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.gstore.app.data.repo.CatalogTypeFilter
 import com.gstore.app.data.repo.GameDto
 import com.gstore.app.data.repo.GStoreRepository
 import kotlinx.coroutines.FlowPreview
@@ -43,6 +44,10 @@ class SearchViewModel(private val repository: GStoreRepository) : ViewModel() {
     private val _categoryLabel = MutableStateFlow<String?>(null)
     val categoryLabel: StateFlow<String?> = _categoryLabel
 
+    /** Filtro Tudo / Apps / Jogos na busca. */
+    private val _typeFilter = MutableStateFlow(CatalogTypeFilter.ALL)
+    val typeFilter: StateFlow<CatalogTypeFilter> = _typeFilter
+
     private var catalog: List<GameDto> = emptyList()
     private var fromCache: Boolean = false
 
@@ -59,6 +64,9 @@ class SearchViewModel(private val repository: GStoreRepository) : ViewModel() {
         }
         viewModelScope.launch {
             _sort.collect { applyFilters() }
+        }
+        viewModelScope.launch {
+            _typeFilter.collect { applyFilters() }
         }
     }
 
@@ -92,6 +100,12 @@ class SearchViewModel(private val repository: GStoreRepository) : ViewModel() {
         _sort.value = s
     }
 
+    /** Filtro Tudo / Apps / Jogos (recalcula os resultados na hora). */
+    fun setTypeFilter(f: CatalogTypeFilter) {
+        _typeFilter.value = f
+        applyFilters()
+    }
+
     /** Carrega jogos de uma categoria (navegação a partir de Categorias). */
     fun searchCategory(categorySlug: String, label: String? = null) {
         _category.value = categorySlug
@@ -112,12 +126,16 @@ class SearchViewModel(private val repository: GStoreRepository) : ViewModel() {
     private fun applyFilters() {
         val cat = _category.value
         val q = _query.value.trim().lowercase()
-        if (q.isBlank() && cat == null) {
+        val filtro = _typeFilter.value
+        if (q.isBlank() && cat == null && filtro == CatalogTypeFilter.ALL) {
             _state.value = SearchUiState.Idle
             return
         }
         _state.value = SearchUiState.Loading
         var results = catalog.asSequence()
+        if (!filtro.matches(null)) {
+            results = results.filter { filtro.matches(it.type) }
+        }
         if (cat != null) {
             results = results.filter { game -> game.categories.contains(cat) }
         }

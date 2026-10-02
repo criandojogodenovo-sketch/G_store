@@ -72,7 +72,7 @@ fun LibraryScreen(
             if (state.downloads.isEmpty()) {
                 EmptyState(
                     title = "Nenhum download ainda",
-                    subtitle = "Os jogos que você baixar aparecem aqui, com o progresso em tempo real.",
+                    subtitle = "Os apps e jogos que você baixar aparecem aqui, com o progresso em tempo real.",
                 )
             } else {
                 LazyColumn {
@@ -117,7 +117,7 @@ fun LibraryScreen(
             if (!state.loggedIn) {
                 EmptyState(
                     title = "Favoritos precisam de conta",
-                    subtitle = "Entre na sua conta para guardar jogos favoritos na nuvem.",
+                    subtitle = "Entre na sua conta para guardar apps e jogos favoritos na nuvem.",
                 )
             } else if (state.loadingFavorites) {
                 Text(
@@ -128,7 +128,7 @@ fun LibraryScreen(
             } else if (state.favorites.isEmpty()) {
                 EmptyState(
                     title = "Nenhum favorito ainda",
-                    subtitle = "Toque no coração na página de um jogo para o guardar aqui.",
+                    subtitle = "Toque no coração na página de um app ou jogo para o guardar aqui.",
                 )
             } else {
                 LazyColumn {

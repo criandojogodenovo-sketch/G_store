@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -29,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.gstore.app.data.repo.CatalogTypeFilter
 import com.gstore.app.data.repo.GameDto
 import com.gstore.app.ui.components.ErrorState
 import com.gstore.app.ui.components.FeaturedGameCard
@@ -51,6 +53,7 @@ fun HomeScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
+    val typeFilter by viewModel.typeFilter.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Cabeçalho com saudação e acesso à busca
@@ -64,7 +67,7 @@ fun HomeScreen(
             Column {
                 Text("G Store", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Sua loja de jogos Android",
+                    "Sua loja de apps e jogos Android",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -82,6 +85,22 @@ fun HomeScreen(
             }
         }
 
+        // Filtro Tudo / Apps / Jogos (a loja tem os dois tipos)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            CatalogTypeFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = typeFilter == f,
+                    onClick = { viewModel.setTypeFilter(f) },
+                    label = { Text(f.rotulo) },
+                )
+            }
+        }
+
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = { viewModel.refresh() },
@@ -91,6 +110,7 @@ fun HomeScreen(
                 is HomeUiState.Error -> ErrorState(message = s.message, onRetry = { viewModel.load() })
                 is HomeUiState.Ready -> HomeContent(
                     state = s,
+                    typeFilter = typeFilter,
                     onOpenGame = onOpenGame,
                     onOpenCategory = onOpenCategory,
                 )
@@ -102,6 +122,7 @@ fun HomeScreen(
 @Composable
 private fun HomeContent(
     state: HomeUiState.Ready,
+    typeFilter: CatalogTypeFilter,
     onOpenGame: (GameDto) -> Unit,
     onOpenCategory: (String) -> Unit,
 ) {
@@ -179,7 +200,15 @@ private fun HomeContent(
             }
         }
 
-        item { SectionTitle("Todos os jogos") }
+        item {
+            SectionTitle(
+                when (typeFilter) {
+                    CatalogTypeFilter.APPS -> "Todos os apps"
+                    CatalogTypeFilter.GAMES -> "Todos os jogos"
+                    CatalogTypeFilter.ALL -> "Todos os apps e jogos"
+                },
+            )
+        }
 
         // Grid embutido na LazyColumn (jogos limitados para performance)
         items(state.grid, key = { it.id }) { game ->

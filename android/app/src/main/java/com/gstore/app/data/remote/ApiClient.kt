@@ -46,6 +46,13 @@ object ApiClient {
     /** JWT corrente para a Data API (do utilizador ou anónimo). */
     @Volatile var dataToken: String? = null
 
+    /**
+     * Token anónimo dedicado para ler dados PÚBLICOS (ex.: nomes de
+     * autores das reviews — colunas públicas de profiles com política
+     * TO anonymous). Independente do token principal do utilizador.
+     */
+    @Volatile var anonDataToken: String? = null
+
     val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -129,6 +136,35 @@ object ApiClient {
 
     val dataApi: NeonDataApi by lazy { dataRetrofit.create(NeonDataApi::class.java) }
 
+    /* ---- Data API com token ANÓNIMO (leitura pública: autores) ---- */
+
+    private val anonDataOkHttp: OkHttpClient by lazy {
+        baseClient()
+            .addInterceptor { chain ->
+                val token = anonDataToken
+                val req = if (token.isNullOrBlank()) {
+                    chain.request()
+                } else {
+                    chain.request().newBuilder()
+                        .header("Authorization", "Bearer $token")
+                        .build()
+                }
+                chain.proceed(req)
+            }
+            .build()
+    }
+
+    private val anonDataRetrofit: Retrofit by lazy {
+        Retrofit.Builder()
+            .baseUrl(BuildConfig.NEON_DATA_API_URL.trimEnd('/') + "/")
+            .client(anonDataOkHttp)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+    }
+
+    /** Mesma interface, sempre com o token anónimo (só leitura pública). */
+    val anonDataApi: NeonDataApi by lazy { anonDataRetrofit.create(NeonDataApi::class.java) }
+
     /* ---------------------- Utilitários ---------------------- */
 
     /** Extrai o valor do cookie `__Secure-neon-auth.session_token` da resposta. */
@@ -203,6 +239,10 @@ interface NeonDataApi {
 
     @GET("profiles")
     suspend fun listProfiles(@QueryMap query: Map<String, String>): List<ProfileRow>
+
+    /** Colunas públicas de profiles (autores de reviews) — token anónimo. */
+    @GET("profiles")
+    suspend fun listAuthorProfiles(@QueryMap query: Map<String, String>): List<com.gstore.app.data.remote.AuthorRow>
 
     @Headers("Prefer: return=representation")
     @POST("profiles")

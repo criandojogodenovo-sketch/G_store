@@ -67,7 +67,7 @@ fun SplashScreen() {
             Text("G Store", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Sua loja de jogos Android",
+                "Sua loja de apps e jogos Android",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -61,12 +61,13 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
     }
 
     /**
-     * Cria um jogo + categoria + primeira versão (APK já hospedado no
-     * GitHub Releases — o admin cola o link).
+     * Cria um app ou jogo + categoria + primeira versão (APK já hospedado
+     * no GitHub Releases — o admin cola o link).
      */
     fun publish(
         name: String,
         slug: String,
+        type: String,
         description: String,
         shortDescription: String,
         categoryId: String,
@@ -79,10 +80,11 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
         apkUrl: String,
     ) {
         viewModelScope.launch {
-            _publishState.value = PublishState.Saving("A criar o jogo...")
+            _publishState.value = PublishState.Saving("A criar o item...")
             val gameResult = repository.createGame(
                 name = name,
                 slug = slug,
+                type = type,
                 description = description,
                 shortDescription = shortDescription,
                 iconUrl = iconUrl,
@@ -152,6 +154,7 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
     fun updateGame(
         gameId: String,
         name: String,
+        type: String,
         description: String,
         shortDescription: String,
         iconUrl: String,
@@ -160,7 +163,7 @@ class DeveloperViewModel(private val repository: GStoreRepository) : ViewModel()
         onDone: (String?) -> Unit,
     ) {
         viewModelScope.launch {
-            repository.updateGame(gameId, name, description, shortDescription, iconUrl, status)
+            repository.updateGame(gameId, name, type, description, shortDescription, iconUrl, status)
                 .onSuccess { jogo ->
                     repository.setGameCategory(jogo.id, categoryId).onFailure { e ->
                         onDone(readable(e)); return@launch

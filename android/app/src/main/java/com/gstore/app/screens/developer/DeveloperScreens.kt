@@ -33,14 +33,15 @@ import androidx.compose.ui.unit.dp
 import com.gstore.app.data.repo.CategoryDto
 
 /**
- * Publicar jogo (admin): nome, descrições, categoria, ícone, screenshots,
- * versão, version_code e o LINK do APK no GitHub Releases.
+ * Publicar app ou jogo (admin): tipo, nome, descrições, categoria, ícone,
+ * screenshots, versão, version_code e o LINK do APK no GitHub Releases.
  */
 @Composable
 fun PublishGameScreen(
     viewModel: DeveloperViewModel,
     onPublished: (String) -> Unit,
 ) {
+    var type by remember { mutableStateOf("game") }
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var shortDescription by remember { mutableStateOf("") }
@@ -72,10 +73,26 @@ fun PublishGameScreen(
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
     ) {
-        Text("Adicionar jogo", style = MaterialTheme.typography.headlineMedium)
+        Text("Adicionar app ou jogo", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
 
-        AdminTextField(name, { name = it; if (!slugEditado) slug = slugify(it) }, "Nome do jogo")
+        Text("Tipo", style = MaterialTheme.typography.labelMedium)
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            androidx.compose.material3.FilterChip(
+                selected = type == "game",
+                onClick = { type = "game"; categoryId = "" },
+                label = { Text("Jogo") },
+            )
+            Spacer(Modifier.width(8.dp))
+            androidx.compose.material3.FilterChip(
+                selected = type == "app",
+                onClick = { type = "app"; categoryId = "" },
+                label = { Text("App") },
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+
+        AdminTextField(name, { name = it; if (!slugEditado) slug = slugify(it) }, "Nome do jogo ou app")
         AdminTextField(slug, { slug = it; slugEditado = true }, "Slug (identificador na URL)")
         AdminTextField(description, { description = it }, "Descrição", minLines = 3)
         AdminTextField(shortDescription, { shortDescription = it }, "Descrição curta", minLines = 1)
@@ -83,7 +100,8 @@ fun PublishGameScreen(
         Spacer(Modifier.height(10.dp))
         Text("Categoria", style = MaterialTheme.typography.labelMedium)
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            CategorySelector(categories, categoryId) { categoryId = it }
+            // Só faz sentido escolher categorias do tipo escolhido acima.
+            CategorySelector(categories.filter { it.type == type }, categoryId) { categoryId = it }
         }
 
         AdminTextField(iconUrl, { iconUrl = it }, "URL do ícone (https://...)")
@@ -132,6 +150,7 @@ fun PublishGameScreen(
                 viewModel.publish(
                     name = name.trim(),
                     slug = slug.trim(),
+                    type = type,
                     description = description.trim(),
                     shortDescription = shortDescription.trim(),
                     categoryId = categoryId,
@@ -156,7 +175,7 @@ fun PublishGameScreen(
                     Spacer(Modifier.width(10.dp))
                     Text(s.passo)
                 }
-                else -> Text("Guardar jogo", style = MaterialTheme.typography.titleMedium)
+                else -> Text("Guardar", style = MaterialTheme.typography.titleMedium)
             }
         }
 
@@ -168,7 +187,7 @@ fun PublishGameScreen(
             is PublishState.Done -> {
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Jogo guardado! Já está disponível na G Store.",
+                    "Guardado! Já está disponível na G Store.",
                     color = MaterialTheme.colorScheme.tertiary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -243,7 +262,7 @@ fun DashboardScreen(
                 .padding(horizontal = 20.dp)
                 .height(52.dp),
         ) {
-            Text("Adicionar novo jogo")
+            Text("Adicionar app ou jogo")
         }
         Spacer(Modifier.height(16.dp))
         if (loading) {
@@ -262,8 +281,8 @@ fun DashboardScreen(
             }
         } else if (myGames.isEmpty()) {
             com.gstore.app.ui.components.EmptyState(
-                title = "Nenhum jogo no catálogo",
-                subtitle = "Adicione o primeiro jogo: nome, versão e o link do APK no GitHub Releases.",
+                title = "Nada no catálogo ainda",
+                subtitle = "Adicione o primeiro app ou jogo: nome, versão e o link do APK no GitHub Releases.",
             )
         } else {
             LazyColumn {
@@ -278,7 +297,8 @@ fun DashboardScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(game.name, style = MaterialTheme.typography.titleMedium)
                                     Text(
-                                        "v${game.version ?: "—"} • ${game.status} • ${game.downloads} downloads",
+                                        "${if (game.type == "app") "App" else "Jogo"} • v${game.version ?: "—"} • ${game.status} • " +
+                                            com.gstore.app.data.repo.countLabel(game.downloads, "download", "downloads"),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )

@@ -10,10 +10,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Construction
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Rocket
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +32,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.gstore.app.data.repo.CategoryDto
+import com.gstore.app.data.repo.countLabel
 import com.gstore.app.ui.components.ErrorState
 
 @Composable
@@ -51,14 +60,40 @@ fun CategoriesScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(s.categories, key = { it.id }) { category ->
-                    CategoryCard(category.name, category.description ?: "${category.gamesCount} jogos") {
-                        onOpenCategory(category.slug)
+                val jogos = s.categories.filter { it.type == "game" }
+                val apps = s.categories.filter { it.type == "app" }
+                if (jogos.isNotEmpty()) {
+                    item(key = "hdr-jogos") { SectionHeader("Jogos") }
+                    items(jogos, key = { it.id }) { category ->
+                        CategoryCard(
+                            name = category.name,
+                            subtitle = category.description
+                                ?: countLabel(category.gamesCount, "jogo", "jogos"),
+                        ) { onOpenCategory(category.slug) }
+                    }
+                }
+                if (apps.isNotEmpty()) {
+                    item(key = "hdr-apps") { SectionHeader("Apps") }
+                    items(apps, key = { it.id }) { category ->
+                        CategoryCard(
+                            name = category.name,
+                            subtitle = category.description
+                                ?: countLabel(category.gamesCount, "app", "apps"),
+                        ) { onOpenCategory(category.slug) }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SectionHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
+    )
 }
 
 @Composable
@@ -109,5 +144,13 @@ private fun imageFor(name: String): ImageVector = when (name.lowercase()) {
     "arcade" -> Icons.Filled.Rocket
     "puzzle" -> Icons.Filled.Extension
     "esportes" -> Icons.Filled.Star
+    // categorias de APPS
+    "ferramentas" -> Icons.Filled.Construction
+    "produtividade" -> Icons.Filled.TaskAlt
+    "social" -> Icons.Filled.People
+    "educação" -> Icons.Filled.School
+    "entretenimento" -> Icons.Filled.Movie
+    "utilitários" -> Icons.Filled.Build
+    "comunicação" -> Icons.Filled.Forum
     else -> Icons.Filled.SportsEsports
 }

@@ -102,7 +102,9 @@ class GameDetailsViewModel(
     fun startDownload() {
         val game = _game.value ?: return
         val version = latestVersion() ?: run {
-            _downloadState.value = DownloadState.Failed("Este jogo ainda não tem APK publicado.")
+            _downloadState.value = DownloadState.Failed(
+                if (game.type == "app") "Este app ainda não tem APK publicado." else "Este jogo ainda não tem APK publicado.",
+            )
             return
         }
         _downloadState.value = DownloadState.Preparing

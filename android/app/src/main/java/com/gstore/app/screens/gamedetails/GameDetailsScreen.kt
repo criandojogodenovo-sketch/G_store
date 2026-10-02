@@ -180,7 +180,10 @@ fun GameDetailsScreen(
 
                     if (g.description != null) {
                         Spacer(Modifier.height(20.dp))
-                        Text("Sobre este jogo", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (g.type == "app") "Sobre este app" else "Sobre este jogo",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                         Spacer(Modifier.height(8.dp))
                         Text(
                             g.description,
@@ -231,7 +234,7 @@ fun GameDetailsScreen(
                         })
                     } else {
                         Text(
-                            "Entre na sua conta para avaliar este jogo.",
+                            "Entre na sua conta para avaliar este app ou jogo.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

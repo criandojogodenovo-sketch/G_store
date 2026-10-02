@@ -94,6 +94,8 @@ data class GameRow(
     val id: String,
     val slug: String,
     val name: String,
+    /** Tipo de item do catálogo: "game" (padrão) ou "app". */
+    val type: String = "game",
     val description: String? = null,
     @SerialName("short_description") val shortDescription: String? = null,
     val developer: String? = null,
@@ -133,12 +135,14 @@ data class GameCategoryJoinRow(
     val categories: CategoryRow? = null,
 )
 
-/** Linha da vista `v_categories` (com contagem de jogos publicados). */
+/** Linha da vista `v_categories` (com contagem de itens publicados). */
 @Serializable
 data class CategoryRow(
     val id: String,
     val slug: String,
     val name: String,
+    /** "game" (padrão) ou "app". */
+    val type: String = "game",
     val description: String? = null,
     @SerialName("icon_url") val iconUrl: String? = null,
     @SerialName("sort_order") val sortOrder: Int = 0,
@@ -202,7 +206,6 @@ data class ReviewRow(
     val comment: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
-    val profiles: ProfileRow? = null,
 )
 
 /** Corpo para criar/atualizar review. */
@@ -227,6 +230,8 @@ data class RegisterDownloadBody(
 data class CreateGameBody(
     val name: String,
     val slug: String,
+    /** "game" ou "app". */
+    val type: String = "game",
     val description: String? = null,
     @SerialName("short_description") val shortDescription: String? = null,
     val developer: String? = null,
@@ -241,6 +246,8 @@ data class CreateGameBody(
 @Serializable
 data class UpdateGameBody(
     val name: String? = null,
+    /** "game" ou "app" (null = não alterar). */
+    val type: String? = null,
     val description: String? = null,
     @SerialName("short_description") val shortDescription: String? = null,
     @SerialName("icon_url") val iconUrl: String? = null,
@@ -266,6 +273,14 @@ data class CreateVersionBody(
 data class GameCategoryLinkBody(
     @SerialName("game_id") val gameId: String,
     @SerialName("category_id") val categoryId: String,
+)
+
+/** Autor de review: colunas PÚBLICAS de profiles (lidas com token anónimo). */
+@Serializable
+data class AuthorRow(
+    val id: String,
+    @SerialName("display_name") val displayName: String? = null,
+    @SerialName("avatar_url") val avatarUrl: String? = null,
 )
 
 /** Erro devolvido pela Data API (PostgREST) ou pelo Neon Auth. */

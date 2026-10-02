@@ -28,7 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-/** Editar um jogo do catálogo (admin): nome, descrições, ícone, categoria, estado. */
+/** Editar um app/jogo do catálogo (admin): tipo, nome, descrições, ícone, categoria, estado. */
 @Composable
 fun EditGameScreen(
     gameId: String,
@@ -41,6 +41,7 @@ fun EditGameScreen(
     val categories by viewModel.categories.collectAsState()
     val game = myGames.firstOrNull { it.id == gameId }
 
+    var type by remember(game) { mutableStateOf(game?.type ?: "game") }
     var name by remember(game) { mutableStateOf(game?.name ?: "") }
     var description by remember(game) { mutableStateOf(game?.description ?: "") }
     var shortDescription by remember(game) { mutableStateOf(game?.shortDescription ?: "") }
@@ -50,7 +51,6 @@ fun EditGameScreen(
         mutableStateOf(categories.firstOrNull { c -> game?.categories?.contains(c.slug) == true }?.id ?: "")
     }
     var erro by remember { mutableStateOf<String?>(null) }
-
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -61,7 +61,7 @@ fun EditGameScreen(
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Voltar")
             }
-            Text("Editar jogo", style = MaterialTheme.typography.titleLarge)
+            Text("Editar item", style = MaterialTheme.typography.titleLarge)
         }
 
         Column(
@@ -69,6 +69,21 @@ fun EditGameScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp),
         ) {
+            Text("Tipo", style = MaterialTheme.typography.labelMedium)
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                androidx.compose.material3.FilterChip(
+                    selected = type == "game",
+                    onClick = { type = "game"; categoryId = "" },
+                    label = { Text("Jogo") },
+                )
+                Spacer(Modifier.padding(4.dp))
+                androidx.compose.material3.FilterChip(
+                    selected = type == "app",
+                    onClick = { type = "app"; categoryId = "" },
+                    label = { Text("App") },
+                )
+            }
+
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
@@ -103,7 +118,8 @@ fun EditGameScreen(
 
             Text("Categoria", style = MaterialTheme.typography.labelMedium)
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                CategorySelector(categories, categoryId) { categoryId = it }
+                // Só categorias do tipo escolhido acima.
+                CategorySelector(categories.filter { it.type == type }, categoryId) { categoryId = it }
             }
 
             Text("Estado", style = MaterialTheme.typography.labelMedium)
@@ -137,6 +153,7 @@ fun EditGameScreen(
                     viewModel.updateGame(
                         gameId = gameId,
                         name = name.trim(),
+                        type = type,
                         description = description.trim(),
                         shortDescription = shortDescription.trim(),
                         iconUrl = iconUrl.trim(),

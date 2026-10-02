@@ -3,6 +3,7 @@ package com.gstore.app.screens.auth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.gstore.app.data.remote.ApiErrors
 import com.gstore.app.data.remote.ApiException
 import com.gstore.app.data.repo.GStoreRepository
 import com.gstore.app.data.repo.ProfileDto
@@ -54,22 +55,22 @@ class AuthViewModel(private val repository: GStoreRepository) : ViewModel() {
     }
 
     /**
-     * Mostra o ERRO REAL do servidor (código + mensagem) para o utilizador
-     * poder diagnosticar — sem mensagens genéricas.
+     * Mostra o ERRO REAL do servidor (código + corpo da resposta) para o
+     * utilizador poder diagnosticar — sem mensagens genéricas do tipo
+     * "HTTP 403". Códigos conhecidos ganham uma explicação amigável.
      */
     private fun readable(t: Throwable): String {
         val msg = t.message ?: return "Falha na autenticação"
         return when (t) {
-            is ApiException -> {
-                when (t.errorCode) {
-                    "INVALID_EMAIL_OR_PASSWORD" -> "E-mail ou senha incorretos. (INVALID_EMAIL_OR_PASSWORD)"
-                    "USER_ALREADY_EXISTS", "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL" ->
-                        "Já existe uma conta com este e-mail. (USER_ALREADY_EXISTS)"
-                    "INVALID_ORIGIN" -> "Origem do app não registada no Neon Auth. (INVALID_ORIGIN)"
-                    else -> "$msg"
-                }
+            is ApiException -> when (t.errorCode) {
+                "INVALID_EMAIL_OR_PASSWORD" -> "E-mail ou senha incorretos. (INVALID_EMAIL_OR_PASSWORD)"
+                "USER_ALREADY_EXISTS", "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL" ->
+                    "Já existe uma conta com este e-mail. (USER_ALREADY_EXISTS)"
+                "INVALID_ORIGIN" -> "Origem do app não registada no Neon Auth. (INVALID_ORIGIN)"
+                "SESSION_NOT_READY" -> msg
+                else -> msg
             }
-            is HttpException -> "HTTP ${t.code()}: $msg"
+            is HttpException -> ApiErrors.readableHttp(t) // corpo real: código + mensagem
             is IOException -> "Sem ligação ao Neon ($msg). Verifique a internet e tente novamente."
             else -> msg
         }

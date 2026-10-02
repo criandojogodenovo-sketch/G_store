@@ -57,7 +57,7 @@ class GStoreRepository private constructor(
         val body = resp.body() ?: throw ApiException(resp.code(), null, "Resposta vazia do Neon Auth")
         val user = body.user ?: throw ApiException(resp.code(), null, "Registo sem utilizador")
         adoptSession(resp.headers().values("Set-Cookie"), user)
-        ensureProfile(user)
+        ensureProfile(user, freshSession = true)
     }
 
     /** Login por e-mail/senha (Better Auth). */
@@ -71,7 +71,7 @@ class GStoreRepository private constructor(
         val body = resp.body() ?: throw ApiException(resp.code(), null, "Resposta vazia do Neon Auth")
         val user = body.user ?: throw ApiException(resp.code(), null, "Login sem utilizador")
         adoptSession(resp.headers().values("Set-Cookie"), user)
-        ensureProfile(user)
+        ensureProfile(user, freshSession = true)
     }
 
     /** Termina a sessão no servidor e limpa o dispositivo. */
@@ -120,42 +120,64 @@ class GStoreRepository private constructor(
     /**
      * Garante que o ApiClient tem um JWT válido para a Data API:
      * do utilizador (15 min, renovável via get-session) ou anónimo (1 h).
+     *
+     * @param freshSession true logo a seguir a um sign-in/sign-up: o
+     *   get-session é repetido com pausas crescentes porque o Neon Auth
+     *   (beta) pode demorar um instante a tornar a sessão nova visível —
+     *   sem isto o login caía para o token anónimo e falhava com 403.
      */
-    private suspend fun ensureDataToken(): String? {
+    private suspend fun ensureDataToken(freshSession: Boolean = false): String? {
         if (ApiClient.sessionCookie == null) {
             ensureAuthCookie()
         }
         val token = if (ApiClient.sessionCookie.isNullOrBlank()) {
             anonymousTokenOrNull()
         } else {
-            userJwtOrNull() ?: anonymousTokenOrNull()
+            userJwtOrNull(freshSession) ?: anonymousTokenOrNull()
         }
         ApiClient.dataToken = token
         return token
     }
 
-    private suspend fun userJwtOrNull(): String? {
+    private suspend fun userJwtOrNull(freshSession: Boolean = false): String? {
         val cached = sessionStore.jwt()
         val now = System.currentTimeMillis()
         if (!cached.token.isNullOrBlank() && cached.expiresAt != null && cached.expiresAt > now + 60_000) {
             return cached.token
         }
-        return refreshUserJwtOrNull()
+        return refreshUserJwtOrNull(freshSession)
     }
 
-    private suspend fun refreshUserJwtOrNull(): String? = jwtMutex.withLock {
+    private suspend fun refreshUserJwtOrNull(freshSession: Boolean = false): String? = jwtMutex.withLock {
         // Outra coroutine pode ter renovado entretanto.
         val cached = sessionStore.jwt()
         val now = System.currentTimeMillis()
         if (!cached.token.isNullOrBlank() && cached.expiresAt != null && cached.expiresAt > now + 60_000) {
             return@withLock cached.token
         }
-        val resp = runCatching { authApi.getSession() }.getOrNull() ?: return@withLock null
-        if (!resp.isSuccessful) return@withLock null
-        val jwt = resp.headers().values("set-auth-jwt").firstOrNull() ?: return@withLock null
-        val exp = ApiClient.jwtExpiry(jwt) ?: (System.currentTimeMillis() / 1000 + 840)
-        sessionStore.saveJwt(jwt, exp)
-        jwt
+        // Logo após o login a sessão pode não estar visível no serviço de
+        // auth (beta), e pedidos repetidos demais podem levar a 429: por
+        // isso repetimos com pausas crescentes (250ms → 8s no total).
+        val tentativas = if (freshSession) 6 else 2
+        for (i in 0 until tentativas) {
+            if (i > 0) kotlinx.coroutines.delay(250L * (1L shl (i - 1))) // 250ms, 500ms, 1s, 2s, 4s
+            val resp = runCatching { authApi.getSession() }.getOrNull()
+                ?: continue // erro de rede: tenta outra vez
+            if (!resp.isSuccessful) {
+                // 429 (limites do serviço beta): esperar e repetir; outros
+                // códigos (ex.: cookie inválido) não valem a pena insistir.
+                if (resp.code() == 429 && i < tentativas - 1) continue
+                return@withLock null
+            }
+            val jwt = resp.headers().values("set-auth-jwt").firstOrNull()
+            if (!jwt.isNullOrBlank()) {
+                val exp = ApiClient.jwtExpiry(jwt) ?: (System.currentTimeMillis() / 1000 + 840)
+                sessionStore.saveJwt(jwt, exp)
+                return@withLock jwt
+            }
+            // 200 sem sessão: o serviço ainda não vê a sessão nova — nova tentativa.
+        }
+        null
     }
 
     /** Token anónimo público (leitura do catálogo sem login). */
@@ -210,10 +232,23 @@ class GStoreRepository private constructor(
 
     /* ---------------- Perfil (tabela profiles) ---------------- */
 
-    /** Garante que o utilizador autenticado tem linha em `profiles`. */
-    private suspend fun ensureProfile(user: AuthUser): ProfileDto {
+    /**
+     * Garante que o utilizador autenticado tem linha em `profiles`.
+     *
+     * Logo após o sign-in/sign-up exigimos o JWT DO UTILIZADOR: se o serviço
+     * (beta) ainda não o devolveu, falhamos com mensagem clara em vez de
+     * cair para o token anónimo (que dava um 403 confuso em /profiles).
+     */
+    private suspend fun ensureProfile(user: AuthUser, freshSession: Boolean = false): ProfileDto {
         val uid = user.id
-        ensureDataToken()
+        ensureDataToken(freshSession)
+        if (freshSession && sessionStore.jwt().token.isNullOrBlank()) {
+            throw ApiException(
+                503, "SESSION_NOT_READY",
+                "Login aceite, mas o Neon Auth demorou a confirmar a sessão (serviço em beta). " +
+                    "Toque em Entrar novamente — a sessão já ficou gravada.",
+            )
+        }
         val existing = dataApi.listProfiles(mapOf("id" to "eq.$uid", "select" to "*"))
         if (existing.isNotEmpty()) {
             val row = existing.first()
@@ -401,13 +436,35 @@ class GStoreRepository private constructor(
 
     suspend fun listReviews(gameId: String): List<ReviewDto> {
         ensureDataToken()
-        return dataApi.listReviews(
+        val rows = dataApi.listReviews(
             mapOf(
                 "game_id" to "eq.$gameId",
-                "select" to "*,profiles(display_name,avatar_url)",
+                "select" to "*",
                 "order" to "updated_at.desc",
             ),
-        ).map { it.toDto() }
+        )
+        if (rows.isEmpty()) return emptyList()
+        // Nomes dos autores: colunas PÚBLICAS de profiles, lidas sempre com
+        // o token anónimo — o RLS só devolve a linha completa ao próprio.
+        val ids = rows.map { it.userId }.distinct().joinToString(",") { "\"$it\"" }
+        val authors = runCatching {
+            ensureAnonDataToken()
+            ApiClient.anonDataApi.listAuthorProfiles(
+                mapOf("id" to "in.($ids)", "select" to "id,display_name,avatar_url"),
+            )
+        }.getOrNull().orEmpty()
+        val byId = authors.associateBy { it.id }
+        return rows.map { row ->
+            row.toDto(authorName = byId[row.userId]?.displayName, authorAvatar = byId[row.userId]?.avatarUrl)
+        }
+    }
+
+    /** Token anónimo dedicado à leitura pública (autores das reviews). */
+    private suspend fun ensureAnonDataToken(): String? {
+        ApiClient.anonDataToken?.let { return it }
+        val t = anonymousTokenOrNull() ?: return null
+        ApiClient.anonDataToken = t
+        return t
     }
 
     /** Cria ou atualiza a review do próprio utilizador para o jogo. */
@@ -434,6 +491,7 @@ class GStoreRepository private constructor(
     suspend fun createGame(
         name: String,
         slug: String,
+        type: String,
         description: String?,
         shortDescription: String?,
         iconUrl: String?,
@@ -447,6 +505,7 @@ class GStoreRepository private constructor(
             CreateGameBody(
                 name = name,
                 slug = slug,
+                type = type,
                 description = description?.takeIf { it.isNotBlank() },
                 shortDescription = shortDescription?.takeIf { it.isNotBlank() },
                 iconUrl = iconUrl?.takeIf { it.isNotBlank() },
@@ -461,6 +520,7 @@ class GStoreRepository private constructor(
     suspend fun updateGame(
         gameId: String,
         name: String?,
+        type: String?,
         description: String?,
         shortDescription: String?,
         iconUrl: String?,
@@ -472,6 +532,7 @@ class GStoreRepository private constructor(
             mapOf("id" to "eq.$gameId"),
             UpdateGameBody(
                 name = name,
+                type = type,
                 description = description,
                 shortDescription = shortDescription,
                 iconUrl = iconUrl,
@@ -535,6 +596,7 @@ class GStoreRepository private constructor(
             id = id,
             slug = slug,
             name = name,
+            type = type,
             description = description,
             shortDescription = shortDescription,
             developer = developer,
@@ -569,6 +631,7 @@ class GStoreRepository private constructor(
         id = id,
         slug = slug,
         name = name,
+        type = type,
         description = description,
         iconUrl = iconUrl,
         sortOrder = sortOrder,
@@ -589,14 +652,17 @@ class GStoreRepository private constructor(
         createdAt = createdAt,
     )
 
-    private fun com.gstore.app.data.remote.ReviewRow.toDto(): ReviewDto = ReviewDto(
+    private fun com.gstore.app.data.remote.ReviewRow.toDto(
+        authorName: String? = null,
+        authorAvatar: String? = null,
+    ): ReviewDto = ReviewDto(
         id = id,
         gameId = gameId,
         userId = userId,
         rating = rating,
         comment = comment,
-        authorName = profiles?.displayName,
-        authorAvatar = profiles?.avatarUrl,
+        authorName = authorName ?: "Utilizador G Store",
+        authorAvatar = authorAvatar,
         createdAt = createdAt,
         updatedAt = updatedAt,
     )
@@ -634,6 +700,8 @@ data class GameDto(
     val id: String,
     val slug: String,
     val name: String,
+    /** "game" (padrão) ou "app" — a G Store vende apps E jogos. */
+    val type: String = "game",
     val description: String? = null,
     @kotlinx.serialization.SerialName("short_description") val shortDescription: String? = null,
     val developer: String? = null,
@@ -669,6 +737,8 @@ data class CategoryDto(
     val id: String,
     val slug: String,
     val name: String,
+    /** "game" (padrão) ou "app". */
+    val type: String = "game",
     val description: String? = null,
     @kotlinx.serialization.SerialName("icon_url") val iconUrl: String? = null,
     @kotlinx.serialization.SerialName("sort_order") val sortOrder: Int = 0,
@@ -712,3 +782,19 @@ internal fun isoDaysAgo(days: Long): String {
     return java.time.format.DateTimeFormatter.ISO_INSTANT
         .format(java.time.Instant.ofEpochMilli(t).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
 }
+
+/**
+ * Filtro de tipo usado na Home e na Busca: Tudo / Apps / Jogos.
+ * [apiValue] é o valor enviado à coluna `type` ("" = sem filtro).
+ */
+enum class CatalogTypeFilter(val rotulo: String, val apiValue: String) {
+    ALL("Tudo", ""),
+    APPS("Apps", "app"),
+    GAMES("Jogos", "game");
+
+    fun matches(type: String?): Boolean = apiValue.isEmpty() || type == apiValue
+}
+
+/** Plural correto em português: 1 app / 2 apps, 1 jogo / 2 jogos… */
+fun countLabel(n: Long, singular: String, plural: String): String =
+    if (n == 1L) "1 $singular" else "$n $plural"

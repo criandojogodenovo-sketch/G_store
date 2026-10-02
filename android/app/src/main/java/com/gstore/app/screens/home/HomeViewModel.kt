@@ -2,6 +2,7 @@ package com.gstore.app.screens.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.gstore.app.data.repo.CatalogTypeFilter
 import com.gstore.app.data.repo.CategoryDto
 import com.gstore.app.data.repo.GameDto
 import com.gstore.app.data.repo.GStoreRepository
@@ -31,8 +32,24 @@ class HomeViewModel(private val repository: GStoreRepository) : ViewModel() {
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing
 
+    /** Filtro Tudo / Apps / Jogos (MUDANÇA: a loja é de apps E jogos). */
+    private val _typeFilter = MutableStateFlow(CatalogTypeFilter.ALL)
+    val typeFilter: StateFlow<CatalogTypeFilter> = _typeFilter
+
+    /** Catálogo completo em memória (sem filtro) para recalcular ao trocar. */
+    private var allGames: List<GameDto> = emptyList()
+    private var allCategories: List<CategoryDto> = emptyList()
+    private var fromCacheFlag: Boolean = false
+
     init {
         load()
+    }
+
+    /** Troca o filtro Tudo/Apps/Jogos sem refazer o pedido à rede. */
+    fun setTypeFilter(f: CatalogTypeFilter) {
+        if (_typeFilter.value == f) return
+        _typeFilter.value = f
+        _state.value = ready(allGames, allCategories, fromCacheFlag)
     }
 
     fun load() {
@@ -74,12 +91,18 @@ class HomeViewModel(private val repository: GStoreRepository) : ViewModel() {
     }
 
     private fun ready(games: List<GameDto>, categories: List<CategoryDto>, fromCache: Boolean): HomeUiState.Ready {
-        val byDownloads = games.sortedByDescending { it.downloads }
+        allGames = games
+        allCategories = categories
+        fromCacheFlag = fromCache
+        val filtro = _typeFilter.value
+        val visiveis = games.filter { filtro.matches(it.type) }
+        val catsVisiveis = categories.filter { filtro.matches(it.type) }
+        val byDownloads = visiveis.sortedByDescending { it.downloads }
         return HomeUiState.Ready(
             featured = byDownloads.take(5),
-            recent = games.take(10),
-            categories = categories,
-            grid = games,
+            recent = visiveis.take(10),
+            categories = catsVisiveis,
+            grid = visiveis,
             fromCache = fromCache,
         )
     }
